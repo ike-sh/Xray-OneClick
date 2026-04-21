@@ -26,22 +26,6 @@
 
 ### 本地未提交版本测试
 
-如果当前代码只是本地修改，尚未确认提交并推送到 GitHub `main` 分支，请不要直接使用线上 raw 链接测试，否则可能拉到旧版本脚本。
-
-先从本机上传当前工作区中的 `install.sh`：
-
-```bash
-scp ./install.sh root@YOUR_SERVER_IP:/root/install.sh
-```
-
-然后在 Linux VPS 上执行：
-
-```bash
-ssh root@YOUR_SERVER_IP
-chmod +x /root/install.sh
-bash /root/install.sh
-```
-
 Alpine 系统可先补齐基础依赖：
 
 ```bash
