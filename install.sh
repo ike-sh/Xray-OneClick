@@ -1385,6 +1385,62 @@ endpoint_clear_command() {
     ok "[完成] 自定义 endpoint 已清除。"
 }
 
+env_truthy() {
+    local value="${1:-}"
+
+    case "${value,,}" in
+        1 | true | yes | y | on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+tunnel_import_auto_yes_enabled() {
+    env_truthy "${XRAY_ONECLICK_YES:-}" || env_truthy "${XRAY_ONECLICK_TUNNEL_IMPORT_YES:-}"
+}
+
+apply_env_endpoint_if_needed() {
+    local endpoint="${XRAY_ONECLICK_ENDPOINT:-}"
+
+    [[ -n "$endpoint" ]] || return 0
+    endpoint="${endpoint//$'\r'/}"
+    if [[ -z "$endpoint" || "$endpoint" =~ [[:space:]] ]]; then
+        err "[失败] [Endpoint] XRAY_ONECLICK_ENDPOINT 不能为空，且不能包含空白字符。"
+        return 1
+    fi
+    if [[ "$endpoint" == *\"* || "$endpoint" == *\\* ]]; then
+        err "[失败] [Endpoint] XRAY_ONECLICK_ENDPOINT 不能包含引号或反斜杠。"
+        return 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        mkdir -p "$CONFIG_DIR"
+        if [[ -s "$STATE_FILE" ]]; then
+            info "[Endpoint] 缺少 jq，已保留现有 state，暂不覆盖 endpoint。"
+            return 0
+        fi
+        cat >"$STATE_FILE" <<EOF
+{
+  "endpoint": {
+    "custom": "$endpoint",
+    "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  }
+}
+EOF
+        ensure_config_security
+        ok "[Endpoint] 已从环境变量设置连接入口: $endpoint"
+        return 0
+    fi
+
+    init_state
+    if [[ -n "$(endpoint_custom_value)" ]]; then
+        return 0
+    fi
+
+    state_set_endpoint "$endpoint" || return 1
+    state_set_meta_action "设置 Endpoint" || err "[状态] 最近变更记录失败。"
+    ok "[Endpoint] 已从环境变量设置连接入口: $endpoint"
+}
+
 get_local_addresses() {
     PUBLIC_IPV4="$(hostname -I 2>/dev/null | tr ' ' '\n' | awk '/^[0-9]+\./{print; exit}')"
     PUBLIC_IPV6="$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | head -n 1 | cut -d'/' -f1)"
@@ -1949,13 +2005,45 @@ is_private_target_address() {
     return 1
 }
 
+confirm_yes_no() {
+    local prompt="$1"
+    local default_answer="${2:-n}"
+    local answer normalized suffix
+
+    if [[ "${default_answer,,}" == "y" || "${default_answer,,}" == "yes" ]]; then
+        suffix="[Y/n]"
+        default_answer="y"
+    else
+        suffix="[y/N]"
+        default_answer="n"
+    fi
+
+    while true; do
+        read -r -p "${prompt} ${suffix}: " answer
+        normalized="${answer,,}"
+        if [[ -z "$normalized" ]]; then
+            [[ "$default_answer" == "y" ]]
+            return $?
+        fi
+        case "$normalized" in
+            y | yes) return 0 ;;
+            n | no) return 1 ;;
+            *) err "请输入 y/yes 或 n/no。" ;;
+        esac
+    done
+}
+
+confirm_dangerous_action() {
+    local prompt="$1"
+
+    confirm_yes_no "${prompt} 输入 y/yes 继续，默认取消" "n"
+}
+
 confirm_forward_warning() {
     local message="$1"
-    local confirm
 
     info "[提示] $message"
-    read -r -p "是否继续? [y/N]: " confirm
-    [[ "$confirm" =~ ^[yY]$ ]]
+    confirm_yes_no "是否继续?" "n"
 }
 
 confirm_forward_safety_warnings() {
@@ -1980,11 +2068,10 @@ confirm_forward_safety_warnings() {
 }
 
 confirm_forward_relay_warnings() {
-    local confirm risky="false"
+    local risky="false"
 
     info "[提示] 专用中转模式会为该转发规则添加 inboundTag -> direct 放行规则，可能绕过默认安全屏蔽，仅建议用于可信固定目标。"
-    read -r -p "请输入 YES 继续: " confirm
-    [[ "$confirm" == "YES" ]] || return 1
+    confirm_dangerous_action "是否继续?" || return 1
 
     if port_in_csv "$FORWARD_TARGET_PORT" "$DEFAULT_SAFETY_BLOCK_PORTS" ||
         port_in_csv "$FORWARD_TARGET_PORT" "$ENHANCED_SAFETY_BLOCK_PORTS" ||
@@ -1994,8 +2081,7 @@ confirm_forward_relay_warnings() {
 
     if [[ "$risky" == "true" ]]; then
         info "[提示] 目标命中高风险端口或私网地址；relay 模式会为该 forward inbound 使用 direct 放行。"
-        read -r -p "请再次输入 YES 继续: " confirm
-        [[ "$confirm" == "YES" ]] || return 1
+        confirm_dangerous_action "请再次确认是否继续?" || return 1
     fi
 
     return 0
@@ -2071,7 +2157,7 @@ forward_scenario_defaults() {
         map)
             FORWARD_SCENARIO_TITLE="多端口落地组（portMap 实验 / fallback 多条 single）"
             FORWARD_SCENARIO_MODE="relay"
-            FORWARD_SCENARIO_NETWORK="tcp"
+            FORWARD_SCENARIO_NETWORK="tcp,udp"
             FORWARD_SCENARIO_LOCK_NETWORK="true"
             ;;
         public)
@@ -2081,9 +2167,9 @@ forward_scenario_defaults() {
             FORWARD_SCENARIO_LOCK_NETWORK="true"
             ;;
         landing)
-            FORWARD_SCENARIO_TITLE="代理落地中转（relay/tcp）"
+            FORWARD_SCENARIO_TITLE="单端口落地中转（relay/tcp,udp）"
             FORWARD_SCENARIO_MODE="relay"
-            FORWARD_SCENARIO_NETWORK="tcp"
+            FORWARD_SCENARIO_NETWORK="tcp,udp"
             FORWARD_SCENARIO_LOCK_NETWORK="true"
             ;;
         lan)
@@ -2101,7 +2187,7 @@ forward_scenario_defaults() {
         custom)
             FORWARD_SCENARIO_TITLE="自定义高级转发"
             FORWARD_SCENARIO_MODE="safe"
-            FORWARD_SCENARIO_NETWORK="tcp"
+            FORWARD_SCENARIO_NETWORK="tcp,udp"
             FORWARD_SCENARIO_LOCK_NETWORK="false"
             ;;
         *)
@@ -2174,7 +2260,7 @@ forward_rule_lines() {
         (.settings.port | tostring),
         (.settings.network // "tcp"),
         (if (.settings.portMap // null) then "portMap" else "single" end)
-      ] | @tsv
+      ] | join("\u001f")
     ' "$CONFIG_FILE" 2>/dev/null
 }
 
@@ -2198,7 +2284,7 @@ forward_state_lines() {
         (.type // "single"),
         (.group // ""),
         ((.port_map // {}) | @json)
-      ] | @tsv
+      ] | join("\u001f")
     ' "$STATE_FILE" 2>/dev/null
 }
 
@@ -2316,7 +2402,7 @@ forward_all_lines() {
 
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        IFS=$'\t' read -r tag listen listen_port target target_port network type <<<"$line"
+        IFS=$'\037' read -r tag listen listen_port target target_port network type <<<"$line"
         [[ -n "$tag" ]] || continue
         mode="$(forward_mode_for_tag "$tag")"
         remark="$(forward_remark_for_tag "$tag")"
@@ -2325,16 +2411,16 @@ forward_all_lines() {
             type="$(forward_type_for_tag "$tag")"
         fi
         [[ -n "$type" ]] || type="single"
-        printf '启用\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mode" "$tag" "$listen" "$listen_port" "$target" "$target_port" "$network" "$remark" "$type" "$group"
+        printf '启用\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$mode" "$tag" "$listen" "$listen_port" "$target" "$target_port" "$network" "$remark" "$type" "$group"
         seen_tags="${seen_tags}${tag}|"
     done < <(forward_rule_lines)
 
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        IFS=$'\t' read -r tag listen listen_port target target_port network mode remark enabled type group port_map <<<"$line"
+        IFS=$'\037' read -r tag listen listen_port target target_port network mode remark enabled type group port_map <<<"$line"
         [[ -n "$tag" ]] || continue
         [[ "$seen_tags" == *"|${tag}|"* ]] && continue
-        printf '停用\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${mode:-safe}" "$tag" "$listen" "$listen_port" "$target" "$target_port" "${network:-tcp}" "$remark" "${type:-single}" "$group"
+        printf '停用\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "${mode:-safe}" "$tag" "$listen" "$listen_port" "$target" "$target_port" "${network:-tcp}" "$remark" "${type:-single}" "$group"
     done < <(forward_state_lines)
 }
 
@@ -2359,10 +2445,10 @@ load_forward_vars_from_tag() {
             (.type // "single"),
             (.group // ""),
             ((.port_map // {}) | @json)
-          ] | @tsv
+          ] | join("\u001f")
         ' "$STATE_FILE" 2>/dev/null | head -n 1)"
         [[ -n "$line" ]] || return 1
-        IFS=$'\t' read -r FORWARD_TAG FORWARD_LISTEN FORWARD_LISTEN_PORT FORWARD_TARGET FORWARD_TARGET_PORT FORWARD_NETWORK FORWARD_MODE FORWARD_REMARK FORWARD_ENABLED FORWARD_TYPE FORWARD_GROUP FORWARD_PORT_MAP_JSON <<<"$line"
+        IFS=$'\037' read -r FORWARD_TAG FORWARD_LISTEN FORWARD_LISTEN_PORT FORWARD_TARGET FORWARD_TARGET_PORT FORWARD_NETWORK FORWARD_MODE FORWARD_REMARK FORWARD_ENABLED FORWARD_TYPE FORWARD_GROUP FORWARD_PORT_MAP_JSON <<<"$line"
         if forward_config_has_tag "$FORWARD_TAG"; then
             FORWARD_ENABLED="true"
         fi
@@ -2384,10 +2470,10 @@ load_forward_vars_from_tag() {
             (.settings.network // "tcp"),
             (if (.settings.portMap // null) then "portMap" else "single" end),
             ((.settings.portMap // {}) | @json)
-          ] | @tsv
+          ] | join("\u001f")
         ' "$CONFIG_FILE" 2>/dev/null | head -n 1)"
         [[ -n "$line" ]] || return 1
-        IFS=$'\t' read -r FORWARD_TAG FORWARD_LISTEN FORWARD_LISTEN_PORT FORWARD_TARGET FORWARD_TARGET_PORT FORWARD_NETWORK FORWARD_TYPE FORWARD_PORT_MAP_JSON <<<"$line"
+        IFS=$'\037' read -r FORWARD_TAG FORWARD_LISTEN FORWARD_LISTEN_PORT FORWARD_TARGET FORWARD_TARGET_PORT FORWARD_NETWORK FORWARD_TYPE FORWARD_PORT_MAP_JSON <<<"$line"
         FORWARD_MODE="$(forward_mode_for_tag "$FORWARD_TAG")"
         FORWARD_REMARK=""
         FORWARD_GROUP=""
@@ -2419,7 +2505,7 @@ select_forward_tag() {
 
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        IFS=$'\t' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
+        IFS=$'\037' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
         case "$filter" in
             enabled) [[ "$status" == "启用" ]] || continue ;;
             disabled) [[ "$status" == "停用" ]] || continue ;;
@@ -2436,12 +2522,12 @@ select_forward_tag() {
     echo -e "\n${YELLOW}[端口转发] 选择规则${PLAIN}"
     idx=1
     for line in "${records[@]}"; do
-        IFS=$'\t' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
+        IFS=$'\037' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
         group="${group:-未分组}"
         if [[ -n "$remark" ]]; then
-            echo " ${idx}) ${status} ${mode}/${type:-single} [${group}] ${tag}: ${listen}:${listen_port} -> ${target}:${target_port}/${network} ${remark}"
+            echo " ${idx}) ${status} ${mode} ${type:-single} ${group} ${tag}: ${listen}:${listen_port} -> ${target}:${target_port}/${network} ${remark}"
         else
-            echo " ${idx}) ${status} ${mode}/${type:-single} [${group}] ${tag}: ${listen}:${listen_port} -> ${target}:${target_port}/${network}"
+            echo " ${idx}) ${status} ${mode} ${type:-single} ${group} ${tag}: ${listen}:${listen_port} -> ${target}:${target_port}/${network}"
         fi
         ((idx++))
     done
@@ -2477,7 +2563,7 @@ list_forward_rules() {
     echo -e "\n${YELLOW}--- Tunnel 中转 ---${PLAIN}"
     printf '%-6s %-6s %-8s %-14s %s\n' "状态" "模式" "类型" "分组" "规则"
     for line in "${rules[@]}"; do
-        IFS=$'\t' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
+        IFS=$'\037' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
         group="${group:-未分组}"
         if [[ -n "$remark" ]]; then
             printf '%-6s %-6s %-8s %-14s %s: %s:%s -> %s:%s/%s %s\n' "$status" "$mode" "${type:-single}" "$group" "$tag" "$listen" "$listen_port" "$target" "$target_port" "$network" "$remark"
@@ -2671,6 +2757,9 @@ configure_forward_scenario() {
                 return 1
                 ;;
         esac
+    fi
+    if [[ "$scenario" == "custom" ]]; then
+        info "[Tunnel] 自定义模式默认网络类型为 tcp,udp；如只需要 TCP，可在下一步输入 tcp。"
     fi
 
     configure_forward_rule \
@@ -3227,7 +3316,7 @@ doctor_forward_rules() {
     fi
 
     for line in "${rules[@]}"; do
-        IFS=$'\t' read -r status mode tag listen listen_port target target_port network remark _type _group <<<"$line"
+        IFS=$'\037' read -r status mode tag listen listen_port target target_port network remark _type _group <<<"$line"
         diagnose_forward_rule "$tag" || return 1
     done
 }
@@ -3239,7 +3328,7 @@ list_tunnel_groups() {
 
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        IFS=$'\t' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
+        IFS=$'\037' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
         key="${group:-未分组}"
         if [[ -z "${totals[$key]+x}" ]]; then
             groups+=("$key")
@@ -3274,7 +3363,7 @@ doctor_tunnel_groups() {
 
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        IFS=$'\t' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
+        IFS=$'\037' read -r status mode tag listen listen_port target target_port network remark type group <<<"$line"
         key="${group:-未分组}"
         if [[ -z "${totals[$key]+x}" ]]; then
             groups+=("$key")
@@ -3448,12 +3537,33 @@ list_managed_ports() {
     done
 }
 
+resolve_tunnel_import_file() {
+    local import_path="$1"
+    local candidate
+
+    import_path="${import_path//$'\r'/}"
+    if [[ -d "$import_path" ]]; then
+        candidate="${import_path%/}/tunnels.json"
+        [[ -f "$candidate" ]] || {
+            err "[失败] [Tunnel] 部署包目录中未找到 tunnels.json: $candidate"
+            return 1
+        }
+        printf '%s' "$candidate"
+        return 0
+    fi
+
+    printf '%s' "$import_path"
+}
+
 import_forward_rules() {
     local import_file="${1:-}" tmp_records line tag listen listen_port target target_port network mode remark enabled choice imported new_tag type group port_map
     local assume_yes="false" arg
     local import_lines=()
 
     shift || true
+    if tunnel_import_auto_yes_enabled; then
+        assume_yes="true"
+    fi
     for arg in "$@"; do
         case "$arg" in
             --yes | -y)
@@ -3475,7 +3585,7 @@ import_forward_rules() {
     if [[ -z "$import_file" ]]; then
         read -r -p "导入文件路径: " import_file
     fi
-    import_file="${import_file//$'\r'/}"
+    import_file="$(resolve_tunnel_import_file "$import_file")" || return 1
     [[ -f "$import_file" ]] || {
         err "[失败] [端口转发] 未找到导入文件: $import_file"
         return 1
@@ -3672,6 +3782,7 @@ ike tunnel import /root/tunnels.json
 也可以使用非交互导入:
 
 ike tunnel import /root/tunnels.json --yes
+ike tunnel bundle import /root/xray-tunnel-bundle-YYYYmmddHHMMSS --yes
 
 说明:
 - --yes 遇到 tag 冲突时会自动改名。
@@ -3688,7 +3799,7 @@ BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
 bash "$SCRIPT_PATH"
-ike tunnel import "${BUNDLE_DIR}/tunnels.json" --yes
+ike tunnel bundle import "$BUNDLE_DIR" --yes
 EOF
     chmod +x "$bundle_dir/install-tunnels.sh"
 
@@ -3696,6 +3807,25 @@ EOF
     ok "[部署包] tunnels.json: $bundle_dir/tunnels.json"
     ok "[部署包] README.txt: $bundle_dir/README.txt"
     ok "[部署包] install-tunnels.sh: $bundle_dir/install-tunnels.sh"
+}
+
+generate_tunnel_script_bundle() {
+    local label="$1"
+
+    info "[Tunnel] ${label}"
+    export_tunnel_bundle
+}
+
+import_tunnel_bundle() {
+    local import_path="${1:-}"
+
+    if [[ -n "$import_path" ]]; then
+        import_path="$(resolve_tunnel_import_file "$import_path")" || return 1
+        shift || true
+        import_forward_rules "$import_path" "$@"
+    else
+        import_forward_rules "$@"
+    fi
 }
 
 configure_tunnel_portmap_rule() {
@@ -3853,7 +3983,7 @@ configure_forward_menu() {
 
     while true; do
         echo -e "\n${YELLOW}[Tunnel 中转管理]${PLAIN}"
-        echo " 1) 单端口落地中转（relay/tcp）"
+        echo " 1) 单端口落地中转（relay/tcp,udp）"
         echo " 2) 多端口落地组（portMap 实验 / fallback 多条 single）"
         echo " 3) 普通公网转发（safe/tcp）"
         echo " 4) 内网服务暴露（relay/tcp）"
@@ -4602,6 +4732,43 @@ run_logs_command() {
     fi
 }
 
+run_bootstrap_command() {
+    local import_file import_args=()
+
+    prepare_system || {
+        err "[失败] Bootstrap 系统准备失败。"
+        return 1
+    }
+    install_or_update_xray || {
+        err "[失败] Bootstrap 安装/更新 Xray 失败。"
+        return 1
+    }
+    apply_env_endpoint_if_needed || return 1
+
+    if [[ -n "${XRAY_ONECLICK_TUNNEL_IMPORT:-}" ]]; then
+        import_file="$(resolve_tunnel_import_file "$XRAY_ONECLICK_TUNNEL_IMPORT")" || return 1
+        if tunnel_import_auto_yes_enabled; then
+            import_args+=(--yes)
+        fi
+        import_forward_rules "$import_file" "${import_args[@]}" || {
+            err "[失败] Bootstrap 导入 Tunnel 规则失败。"
+            return 1
+        }
+    else
+        info "[Bootstrap] 未设置 XRAY_ONECLICK_TUNNEL_IMPORT，跳过 Tunnel 导入。"
+    fi
+
+    apply_config "Bootstrap" || {
+        err "[失败] Bootstrap 配置应用失败。"
+        return 1
+    }
+
+    echo
+    show_version
+    list_forward_rules
+    view_config "$LINK_VIEW_MODE" "doctor"
+}
+
 run_tunnel_command() {
     local action="${1:-}"
     local mode="${2:-safe}"
@@ -4630,7 +4797,11 @@ run_tunnel_command() {
                 err "[失败] 系统准备失败，无法添加 Tunnel。"
                 return 1
             }
-            configure_forward_rule "$mode" && install_forward_rule
+            if [[ "$mode" == "relay" ]]; then
+                configure_forward_rule "$mode" "tcp,udp" "true" "单端口落地中转（relay/tcp,udp）" && install_forward_rule
+            else
+                configure_forward_rule "$mode" "tcp" "true" "普通公网转发（safe/tcp）" && install_forward_rule
+            fi
             ;;
         enable)
             prepare_system || {
@@ -4683,14 +4854,31 @@ run_tunnel_command() {
         export)
             export_forward_rules
             ;;
+        generate-script)
+            generate_tunnel_script_bundle "生成 Tunnel 部署包"
+            ;;
+        generate-relay-script)
+            generate_tunnel_script_bundle "生成中转/落地部署脚本包"
+            ;;
+        generate-client-script)
+            generate_tunnel_script_bundle "生成可导入 Tunnel 规则包"
+            ;;
         bundle)
             case "$subaction" in
                 export)
                     export_tunnel_bundle
                     ;;
+                import)
+                    prepare_system || {
+                        err "[失败] 系统准备失败，无法导入 Tunnel 部署包。"
+                        return 1
+                    }
+                    shift 2
+                    import_tunnel_bundle "$@"
+                    ;;
                 *)
                     err "[失败] 未知 tunnel bundle 参数: $subaction"
-                    echo "用法: ike tunnel bundle export"
+                    echo "用法: ike tunnel bundle export | ike tunnel bundle import [文件或目录] [--yes]"
                     return 1
                     ;;
             esac
@@ -4712,7 +4900,7 @@ run_tunnel_command() {
             ;;
         *)
             err "[失败] 未知 tunnel 参数: $action"
-            echo "用法: ike tunnel list | ike tunnel add [safe|relay|map] | ike tunnel enable [tag] | ike tunnel disable [tag] | ike tunnel edit [tag] | ike tunnel test [tag] | ike tunnel doctor [tag] | ike tunnel group list|doctor | ike tunnel template | ike tunnel ports | ike tunnel export | ike tunnel import | ike tunnel del [tag]"
+            echo "用法: ike tunnel list | ike tunnel add [safe|relay|map] | ike tunnel enable [tag] | ike tunnel disable [tag] | ike tunnel edit [tag] | ike tunnel test [tag] | ike tunnel doctor [tag] | ike tunnel group list|doctor | ike tunnel template | ike tunnel ports | ike tunnel export | ike tunnel bundle export|import | ike tunnel generate-script | ike tunnel import | ike tunnel del [tag]"
             return 1
             ;;
     esac
@@ -4767,6 +4955,11 @@ Xray-OneClick 命令帮助
   ike tunnel import
   ike tunnel import /path/to/tunnels.json --yes
   ike tunnel bundle export
+  ike tunnel bundle import /path/to/tunnels.json --yes
+  ike tunnel generate-script
+  ike tunnel generate-relay-script
+  ike tunnel generate-client-script
+  ike bootstrap
   ike forward list
   ike forward add
   ike forward add safe
@@ -4808,7 +5001,7 @@ main() {
             show_version
             return 0
             ;;
-        "" | view | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward) ;;
+        "" | view | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | bootstrap) ;;
         *)
             err "[失败] 未知命令: $1"
             echo "运行 ike help 查看可用命令。"
@@ -4819,6 +5012,7 @@ main() {
     ensure_root
     check_os
     detect_arch
+    apply_env_endpoint_if_needed || return 1
 
     case "${1:-}" in
         "")
@@ -4859,6 +5053,9 @@ main() {
         forward)
             shift
             run_forward_command "$@"
+            ;;
+        bootstrap)
+            run_bootstrap_command
             ;;
     esac
 }

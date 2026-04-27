@@ -109,6 +109,7 @@ cleanup_fixture() {
     FORCE_PORTMAP_APPLY_FAIL="false"
     ENDPOINT_AUTO_OVERRIDE=""
     ENDPOINT_AUTO_CACHE=""
+    unset XRAY_ONECLICK_YES XRAY_ONECLICK_ENDPOINT XRAY_ONECLICK_TUNNEL_IMPORT XRAY_ONECLICK_TUNNEL_IMPORT_YES
 }
 
 setup_fixture() {
@@ -333,19 +334,71 @@ test_list_enabled_disabled_and_state_loss() {
 
 test_forward_scenario_defaults() {
     forward_scenario_defaults "map" || fail "map scenario defaults failed"
-    [[ "$FORWARD_SCENARIO_MODE" == "relay" && "$FORWARD_SCENARIO_NETWORK" == "tcp" && "$FORWARD_SCENARIO_LOCK_NETWORK" == "true" ]] || fail "map scenario did not map to relay/tcp"
+    [[ "$FORWARD_SCENARIO_MODE" == "relay" && "$FORWARD_SCENARIO_NETWORK" == "tcp,udp" && "$FORWARD_SCENARIO_LOCK_NETWORK" == "true" ]] || fail "map scenario did not map to relay/tcp,udp"
 
     forward_scenario_defaults "public" || fail "public scenario defaults failed"
     [[ "$FORWARD_SCENARIO_MODE" == "safe" && "$FORWARD_SCENARIO_NETWORK" == "tcp" && "$FORWARD_SCENARIO_LOCK_NETWORK" == "true" ]] || fail "public scenario did not map to safe/tcp"
 
     forward_scenario_defaults "landing" || fail "landing scenario defaults failed"
-    [[ "$FORWARD_SCENARIO_MODE" == "relay" && "$FORWARD_SCENARIO_NETWORK" == "tcp" && "$FORWARD_SCENARIO_LOCK_NETWORK" == "true" ]] || fail "landing scenario did not map to relay/tcp"
+    [[ "$FORWARD_SCENARIO_MODE" == "relay" && "$FORWARD_SCENARIO_NETWORK" == "tcp,udp" && "$FORWARD_SCENARIO_LOCK_NETWORK" == "true" ]] || fail "landing scenario did not map to relay/tcp,udp"
 
     forward_scenario_defaults "lan" || fail "lan scenario defaults failed"
     [[ "$FORWARD_SCENARIO_MODE" == "relay" && "$FORWARD_SCENARIO_NETWORK" == "tcp" && "$FORWARD_SCENARIO_LOCK_NETWORK" == "true" ]] || fail "lan scenario did not map to relay/tcp"
 
     forward_scenario_defaults "udp" || fail "udp scenario defaults failed"
     [[ "$FORWARD_SCENARIO_MODE" == "safe" && "$FORWARD_SCENARIO_NETWORK" == "udp" && "$FORWARD_SCENARIO_LOCK_NETWORK" == "false" ]] || fail "udp scenario defaults changed unexpectedly"
+}
+
+test_confirm_yes_no_variants() {
+    local input
+
+    for input in y Y yes YES Yes; do
+        printf '%s\n' "$input" | confirm_yes_no "是否继续?" "n" >/dev/null 2>&1 || fail "confirm did not accept ${input}"
+    done
+
+    if printf '\n' | confirm_yes_no "是否继续?" "n" >/dev/null 2>&1; then
+        fail "confirm default enter should cancel"
+    fi
+}
+
+test_tunnel_add_defaults_by_mode() {
+    setup_fixture
+    printf '\n30010\n1.2.3.4\n443\n\n\ny\n' | run_tunnel_command add relay >/dev/null || fail "direct relay add failed"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "tunnel-30010-443" and .settings.network == "tcp,udp")' "relay add did not default to tcp,udp"
+
+    printf '\n30011\n1.2.3.4\n443\n\n\n' | run_tunnel_command add safe >/dev/null || fail "direct safe add failed"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "tunnel-30011-443" and .settings.network == "tcp")' "safe add did not default to tcp"
+
+    printf '\n30012\n1.2.3.4\n443\n\n\ny\n' | run_forward_command add relay >/dev/null || fail "forward relay alias add failed"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "tunnel-30012-443" and .settings.network == "tcp,udp")' "forward relay alias did not default to tcp,udp"
+    cleanup_fixture
+}
+
+test_forward_remark_fields_do_not_shift() {
+    local output
+
+    setup_fixture
+    set_forward_vars "tunnel-30000-443" "0.0.0.0" "30000" "1.2.3.4" "443" "tcp,udp" "relay" "" "true" "single" ""
+    write_forward_config_from_vars || fail "empty remark tunnel write failed"
+    state_sync_forward_rule || fail "empty remark state sync failed"
+
+    load_forward_vars_from_tag "tunnel-30000-443" || fail "load empty remark tunnel failed"
+    [[ -z "${FORWARD_REMARK:-}" ]] || fail "empty remark shifted into ${FORWARD_REMARK}"
+    [[ "$FORWARD_ENABLED" == "true" ]] || fail "enabled field shifted after empty remark"
+    [[ "${FORWARD_TYPE:-}" == "single" ]] || fail "type field shifted after empty remark"
+
+    set_forward_vars "tunnel-30001-443" "0.0.0.0" "30001" "1.2.3.4" "443" "tcp" "safe" "real-remark" "true" "single" ""
+    write_forward_config_from_vars || fail "remark tunnel write failed"
+    state_sync_forward_rule || fail "remark state sync failed"
+    load_forward_vars_from_tag "tunnel-30001-443" || fail "load remark tunnel failed"
+    [[ "$FORWARD_REMARK" == "real-remark" ]] || fail "remark was not preserved"
+    [[ "$FORWARD_REMARK" != "true" && "$FORWARD_REMARK" != "false" ]] || fail "enabled field appeared as remark"
+
+    output="$(list_forward_rules)"
+    [[ "$output" != *"single single"* ]] || fail "list repeated type as single single"
+    [[ "$output" != *"/tcp,udp single"* ]] || fail "list appended redundant single after rule"
+    assert_output_contains "$output" "未分组" "list did not show empty group as 未分组"
+    cleanup_fixture
 }
 
 test_forward_doctor_statuses() {
@@ -610,6 +663,177 @@ test_tunnel_bundle_export() {
     cleanup_fixture
 }
 
+test_tunnel_generate_script_aliases() {
+    local alias bundle_dir
+
+    for alias in generate-script generate-relay-script generate-client-script; do
+        setup_fixture
+        set_forward_vars "tunnel-30000-443" "0.0.0.0" "30000" "1.2.3.4" "443" "tcp" "safe" "bundle-alias" "true" "single" "edge"
+        write_forward_config_from_vars || fail "bundle alias tunnel write failed"
+        state_sync_forward_rule || fail "bundle alias tunnel state failed"
+
+        run_tunnel_command "$alias" >/dev/null || fail "bundle alias ${alias} failed"
+        bundle_dir="$(find "$TEST_TMP" -maxdepth 1 -type d -name 'xray-tunnel-bundle-*' | head -n 1)"
+        [[ -d "$bundle_dir" ]] || fail "bundle alias ${alias} did not create directory"
+        [[ -f "$bundle_dir/tunnels.json" ]] || fail "bundle alias ${alias} missing tunnels.json"
+        [[ -f "$bundle_dir/README.txt" ]] || fail "bundle alias ${alias} missing README.txt"
+        [[ -x "$bundle_dir/install-tunnels.sh" ]] || fail "bundle alias ${alias} missing install-tunnels.sh"
+        assert_jq "$bundle_dir/tunnels.json" '.version == 1 and .type == "xray-oneclick-tunnels" and any(.tunnels[]?; .tag == "tunnel-30000-443")' "bundle alias ${alias} tunnels.json invalid"
+        cleanup_fixture
+    done
+}
+
+test_tunnel_bundle_import_file_and_dir() {
+    local import_file bundle_dir
+
+    setup_fixture
+    import_file="${TEST_TMP}/tunnels-file.json"
+    cat >"$import_file" <<'JSON'
+{
+  "version": 1,
+  "type": "xray-oneclick-tunnels",
+  "tunnels": [
+    {
+      "tag": "tunnel-33000-443",
+      "type": "single",
+      "group": "bundle-file",
+      "listen": "0.0.0.0",
+      "listen_port": 33000,
+      "target": "1.1.1.1",
+      "target_port": 443,
+      "network": "tcp",
+      "mode": "safe",
+      "remark": "bundle-file",
+      "enabled": true
+    }
+  ]
+}
+JSON
+    run_tunnel_command bundle import "$import_file" --yes >/dev/null || fail "bundle import file failed"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "tunnel-33000-443")' "bundle import file inbound missing"
+    cleanup_fixture
+
+    setup_fixture
+    bundle_dir="${TEST_TMP}/xray-tunnel-bundle-test"
+    mkdir -p "$bundle_dir"
+    cat >"$bundle_dir/tunnels.json" <<'JSON'
+{
+  "version": 1,
+  "type": "xray-oneclick-tunnels",
+  "tunnels": [
+    {
+      "tag": "tunnel-34000-443",
+      "type": "single",
+      "group": "bundle-dir",
+      "listen": "0.0.0.0",
+      "listen_port": 34000,
+      "target": "2.2.2.2",
+      "target_port": 443,
+      "network": "tcp",
+      "mode": "safe",
+      "remark": "bundle-dir",
+      "enabled": true
+    }
+  ]
+}
+JSON
+    run_tunnel_command bundle import "$bundle_dir" --yes >/dev/null || fail "bundle import dir failed"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "tunnel-34000-443")' "bundle import dir inbound missing"
+    cleanup_fixture
+}
+
+test_tunnel_import_env_yes_conflict_rename() {
+    local env_name import_file count renamed_tag
+
+    for env_name in XRAY_ONECLICK_YES XRAY_ONECLICK_TUNNEL_IMPORT_YES; do
+        setup_fixture
+        set_forward_vars "tunnel-30000-443" "0.0.0.0" "30000" "1.2.3.4" "443" "tcp" "safe" "original" "true" "single" "edge"
+        write_forward_config_from_vars || fail "env yes original tunnel write failed"
+        state_sync_forward_rule || fail "env yes original tunnel state failed"
+        import_file="${TEST_TMP}/env-yes-tunnels.json"
+        cat >"$import_file" <<'JSON'
+{
+  "version": 1,
+  "type": "xray-oneclick-tunnels",
+  "tunnels": [
+    {
+      "tag": "tunnel-30000-443",
+      "type": "single",
+      "group": "edge",
+      "listen": "0.0.0.0",
+      "listen_port": 30000,
+      "target": "9.9.9.9",
+      "target_port": 443,
+      "network": "tcp",
+      "mode": "safe",
+      "remark": "renamed",
+      "enabled": true
+    }
+  ]
+}
+JSON
+        export "$env_name=1"
+        run_tunnel_command import "$import_file" >/dev/null || fail "${env_name} import failed"
+        count="$(jq '[.inbounds[]? | select((.tag // "") | startswith("tunnel-30000-443"))] | length' "$CONFIG_FILE")"
+        [[ "$count" == "2" ]] || fail "${env_name} import did not keep original and renamed tunnel"
+        renamed_tag="$(jq -r '.inbounds[]? | select((.tag // "") | startswith("tunnel-30000-443-")) | .tag' "$CONFIG_FILE" | head -n 1)"
+        [[ -n "$renamed_tag" ]] || fail "${env_name} renamed tag missing"
+        assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "tunnel-30000-443" and .settings.address == "1.2.3.4")' "${env_name} overwrote original tunnel"
+        # shellcheck disable=SC2016
+        assert_jq_arg "$STATE_FILE" tag "$renamed_tag" 'any(.tunnels[]?; .tag == $tag and .target == "9.9.9.9")' "${env_name} renamed tunnel state missing"
+        cleanup_fixture
+    done
+}
+
+test_env_endpoint_only_sets_when_missing() {
+    setup_fixture
+    XRAY_ONECLICK_ENDPOINT="env.example.com"
+    apply_env_endpoint_if_needed >/dev/null || fail "env endpoint set failed"
+    assert_jq "$STATE_FILE" '.endpoint.custom == "env.example.com"' "env endpoint was not saved"
+
+    XRAY_ONECLICK_ENDPOINT="new.example.com"
+    apply_env_endpoint_if_needed >/dev/null || fail "env endpoint second apply failed"
+    assert_jq "$STATE_FILE" '.endpoint.custom == "env.example.com"' "env endpoint overwrote existing custom endpoint"
+    cleanup_fixture
+}
+
+test_bootstrap_endpoint_and_tunnel_import() {
+    local import_file output
+
+    setup_fixture
+    import_file="${TEST_TMP}/bootstrap-tunnels.json"
+    cat >"$import_file" <<'JSON'
+{
+  "version": 1,
+  "type": "xray-oneclick-tunnels",
+  "tunnels": [
+    {
+      "tag": "tunnel-35000-443",
+      "type": "single",
+      "group": "bootstrap",
+      "listen": "0.0.0.0",
+      "listen_port": 35000,
+      "target": "3.3.3.3",
+      "target_port": 443,
+      "network": "tcp",
+      "mode": "safe",
+      "remark": "bootstrap",
+      "enabled": true
+    }
+  ]
+}
+JSON
+    XRAY_ONECLICK_ENDPOINT="bootstrap.example.com"
+    XRAY_ONECLICK_TUNNEL_IMPORT="$import_file"
+    XRAY_ONECLICK_YES=1
+    output="$(run_bootstrap_command)" || fail "bootstrap command failed"
+    assert_jq "$STATE_FILE" '.endpoint.custom == "bootstrap.example.com"' "bootstrap endpoint not saved"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "tunnel-35000-443" and .settings.address == "3.3.3.3")' "bootstrap tunnel import missing"
+    assert_output_contains "$output" "Xray-OneClick" "bootstrap did not print version"
+    assert_output_contains "$output" "tunnel-35000-443" "bootstrap did not print tunnel list or doctor output"
+    cleanup_fixture
+}
+
 test_config_service_logs_commands_in_test_env() {
     local output
 
@@ -680,6 +904,9 @@ run_test test_enable_disable_roundtrip
 run_test test_export_and_import_conflict_rename
 run_test test_list_enabled_disabled_and_state_loss
 run_test test_forward_scenario_defaults
+run_test test_confirm_yes_no_variants
+run_test test_tunnel_add_defaults_by_mode
+run_test test_forward_remark_fields_do_not_shift
 run_test test_forward_doctor_statuses
 run_test test_forward_doctor_detects_missing_relay_route
 run_test test_forward_template_imports
@@ -691,6 +918,11 @@ run_test test_old_forwards_import_compatibility
 run_test test_tunnel_import_path_yes_conflict_rename
 run_test test_forward_import_alias_accepts_path_yes
 run_test test_tunnel_bundle_export
+run_test test_tunnel_generate_script_aliases
+run_test test_tunnel_bundle_import_file_and_dir
+run_test test_tunnel_import_env_yes_conflict_rename
+run_test test_env_endpoint_only_sets_when_missing
+run_test test_bootstrap_endpoint_and_tunnel_import
 run_test test_config_service_logs_commands_in_test_env
 run_test test_portmap_fallback_to_single_tunnels
 run_test test_forward_alias_lists_tunnels

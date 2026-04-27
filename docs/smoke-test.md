@@ -83,6 +83,9 @@ ike tunnel template
 ike tunnel ports
 ike tunnel export
 ike tunnel bundle export
+ike tunnel generate-script
+ike tunnel generate-relay-script
+ike tunnel generate-client-script
 ike tunnel import
 ike tunnel del
 xray run -test -c /etc/xray/config.json
@@ -91,15 +94,15 @@ xray run -test -c /etc/xray/config.json
 建议准备两个简单目标：
 
 - safe：公网 IP 或域名的 TCP 端口。
-- relay：可信固定目标，确认理解该模式会为单条 Tunnel inbound 添加 `inboundTag -> direct` 专用路由。
+- relay：可信固定目标，确认理解该模式会为单条 Tunnel inbound 添加 `inboundTag -> direct` 专用路由；`ike tunnel add relay` 默认网络类型应显示为 `tcp,udp`，确认输入支持 `y/yes/YES`，直接回车应取消。
 - portMap：准备同一 group 下的多个本地端口；如果校验失败，应自动 fallback 为多条 single Tunnel。
 
 预期结果：
 
 - `safe` 规则写入 Tunnel inbound，不新增 direct 放行规则。
-- `relay` 规则写入 Tunnel inbound，并为该 tag 添加 direct 放行规则。
-- `list` 能显示启用/停用状态、模式、类型、group 和备注。
-- `edit` 修改后配置校验通过。
+- `relay` 规则写入 Tunnel inbound，并为该 tag 添加 direct 放行规则，网络类型默认为 `tcp,udp`。
+- `list` 能显示启用/停用状态、模式、类型、group、备注和连接入口；规则末尾不应重复追加 `single`。
+- `edit` 修改后配置校验通过，备注字段为空时显示 `无`，不应出现 `备注名称 (当前: true)`。
 - `disable` 后对应 inbound 消失，但 state 保留。
 - `enable` 后对应 inbound 恢复。
 - `test` / `doctor` 能显示目标解析、TCP 连通性、relay 路由或明确跳过原因。
@@ -107,9 +110,18 @@ xray run -test -c /etc/xray/config.json
 - `template` 生成 `/root/xray-tunnels-template.json`。
 - `export` 生成 `/root/xray-tunnels-YYYYmmddHHMMSS.json`，格式包含 `version`、`type`、`tunnels`。
 - `bundle export` 生成 `/root/xray-tunnel-bundle-YYYYmmddHHMMSS/`，包含 `tunnels.json`、`README.txt` 和可选辅助脚本。
+- `generate-script` / `generate-relay-script` / `generate-client-script` 都能生成同样结构的部署包。
 - `import` 兼容新 `tunnels[]` 和旧 `forwards[]`，不覆盖非 Tunnel 入站；tag 冲突时按选择处理。
 - 非交互导入可使用 `ike tunnel import /path/to/tunnels.json --yes`，冲突默认自动改名。
+- 部署包导入可使用 `ike tunnel bundle import /root/xray-tunnel-bundle-*/tunnels.json --yes`，也可传入真实存在的部署包目录。
 - `del` 不误删 SS2022 / VLESS Encryption / SOCKS5。
+
+自动化导入验证使用真实存在的文件路径：
+
+```bash
+ike tunnel bundle import /root/xray-tunnel-bundle-YYYYmmddHHMMSS/tunnels.json --yes
+XRAY_ONECLICK_ENDPOINT=example.com XRAY_ONECLICK_TUNNEL_IMPORT=/root/tunnels.json XRAY_ONECLICK_YES=1 ike bootstrap
+```
 
 兼容入口也应可用：
 

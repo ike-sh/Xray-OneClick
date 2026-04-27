@@ -78,6 +78,7 @@ ike help
 ike version
 ike update
 ike backup
+ike bootstrap
 ike endpoint show
 ike endpoint set
 ike endpoint clear
@@ -112,6 +113,10 @@ ike tunnel export
 ike tunnel import
 ike tunnel import /path/to/tunnels.json --yes
 ike tunnel bundle export
+ike tunnel bundle import /path/to/tunnels.json --yes
+ike tunnel generate-script
+ike tunnel generate-relay-script
+ike tunnel generate-client-script
 ike tunnel del
 ```
 
@@ -295,7 +300,7 @@ Tunnel 是 Xray 官方入站协议，旧称 `dokodemo-door`。本脚本使用应
   "settings": {
     "address": "1.2.3.4",
     "port": 443,
-    "network": "tcp"
+    "network": "tcp,udp"
   }
 }
 ```
@@ -304,7 +309,7 @@ Tunnel 是 Xray 官方入站协议，旧称 `dokodemo-door`。本脚本使用应
 
 菜单 `13) Tunnel 中转管理` 提供场景化入口：
 
-1. 单端口落地中转（`relay/tcp`）
+1. 单端口落地中转（`relay/tcp,udp`）
 2. 多端口落地组（`portMap` 实验，失败自动 fallback 为多条 `single`）
 3. 普通公网转发（`safe/tcp`）
 4. 内网服务暴露（`relay/tcp`）
@@ -330,6 +335,11 @@ ike tunnel template
 ike tunnel ports
 ike tunnel export
 ike tunnel import
+ike tunnel bundle export
+ike tunnel bundle import
+ike tunnel generate-script
+ike tunnel generate-relay-script
+ike tunnel generate-client-script
 ike tunnel del
 ```
 
@@ -337,9 +347,9 @@ ike tunnel del
 
 ### safe / relay
 
-`safe` 是默认模式，`ike tunnel add` 等同于 `ike tunnel add safe`。该模式不新增专用 routing 放行规则，默认遵守现有安全屏蔽、中国大陆直连屏蔽和增强安全屏蔽，适合普通公网端口转发。
+`safe` 是默认模式，`ike tunnel add` 等同于 `ike tunnel add safe`，直接命令默认网络类型为 `tcp`。该模式不新增专用 routing 放行规则，默认遵守现有安全屏蔽、中国大陆直连屏蔽和增强安全屏蔽，适合普通公网端口转发。
 
-`relay` 适合代理中转、落地转发和可信固定目标。添加规则时，脚本会额外写入只绑定该 Tunnel inbound 的专用路由：
+`relay` 适合代理中转、落地转发和可信固定目标。`ike tunnel add relay` 与兼容命令 `ike forward add relay` 默认网络类型为 `tcp,udp`，更适合 SS2022、游戏、语音、QUIC/HY2/TUIC 等中转场景。添加规则时，脚本会额外写入只绑定该 Tunnel inbound 的专用路由：
 
 ```json
 {
@@ -349,7 +359,7 @@ ike tunnel del
 }
 ```
 
-这条规则会放在默认安全屏蔽规则之前，只对该 Tunnel inbound 生效，不影响 SS2022、VLESS Encryption、SOCKS5 或其它 Tunnel。它可能绕过默认安全规则，所以只建议用于可信固定目标；启用 relay 时必须输入 `YES` 确认。
+这条规则会放在默认安全屏蔽规则之前，只对该 Tunnel inbound 生效，不影响 SS2022、VLESS Encryption、SOCKS5 或其它 Tunnel。它可能绕过默认安全规则，所以只建议用于可信固定目标；启用 relay 时会提示确认，支持 `y`、`Y`、`yes`、`YES`、`Yes`，直接回车默认取消。
 
 ### single / portMap / group
 
@@ -367,15 +377,17 @@ ike tunnel del
 
 ```text
 状态  模式   类型      分组           规则
-启用  relay  single    landing-us     tunnel-30000-443: 0.0.0.0:30000 -> 1.2.3.4:443/tcp 备注
+启用  relay  single    landing-us     tunnel-30000-443: 0.0.0.0:30000 -> 1.2.3.4:443/tcp,udp 备注
+       连接入口: example.com:30000
 停用  safe   single    未分组         tunnel-40000-8443: 0.0.0.0:40000 -> example.com:8443/tcp
+       连接入口: example.com:40000
 ```
 
 `ike tunnel disable [tag]` 会从 `config.json` 移除对应 Tunnel inbound；如果是 relay 模式，也会移除对应 `inboundTag -> direct` 规则，但保留 state 摘要并写入 `enabled: false`。
 
 `ike tunnel enable [tag]` 会根据 state 摘要重新写入 inbound；如果模式为 relay，会重新写入对应专用路由。
 
-`ike tunnel edit [tag]` 可修改 single 规则的监听地址、监听端口、目标地址、目标端口、网络类型、模式、group 和备注。`portMap` 规则建议通过 export/import 修改。
+`ike tunnel edit [tag]` 可修改 single 规则的监听地址、监听端口、目标地址、目标端口、网络类型、模式、group 和备注；备注为空时显示为 `无`，不会与启用状态混淆。`portMap` 规则建议通过 export/import 修改。
 
 `ike tunnel test [tag]` 面向单条规则排查，显示本地监听、目标解析、TCP 连通性、UDP 说明、relay 路由和安全规则影响。
 
@@ -413,7 +425,7 @@ ike tunnel del
 ike tunnel import /path/to/tunnels.json --yes
 ```
 
-传入文件路径时不会再询问路径；加 `--yes` 时，遇到 tag 冲突默认自动改名，适合自动化部署。兼容别名 `ike forward import /path/to/tunnels.json --yes` 仍可使用。
+传入文件路径时不会再询问路径；加 `--yes` 时，遇到 tag 冲突默认自动改名，适合自动化部署。也可用 `XRAY_ONECLICK_YES=1` 或 `XRAY_ONECLICK_TUNNEL_IMPORT_YES=1` 取得同样效果。兼容别名 `ike forward import /path/to/tunnels.json --yes` 仍可使用。
 
 ### Tunnel 部署包
 
@@ -430,6 +442,49 @@ ike tunnel import /path/to/tunnels.json --yes
 - `install-tunnels.sh`: 可选辅助脚本，只负责下载/调用 Xray-OneClick 并导入 `tunnels.json`。
 
 部署包用于“落地机生成线路机导入配置”的轻量工作流，不会写死用户敏感信息到命令行，也不新增协议逻辑。
+
+这些命令都是 `ike tunnel bundle export` 的易懂别名：
+
+```bash
+ike tunnel generate-script
+ike tunnel generate-relay-script
+ike tunnel generate-client-script
+```
+
+导入部署包时可以传入 `tunnels.json`，也可以直接传入部署包目录；目录模式会自动读取其中的 `tunnels.json`：
+
+```bash
+ike tunnel bundle import /root/xray-tunnel-bundle-YYYYmmddHHMMSS --yes
+ike tunnel bundle import /root/xray-tunnel-bundle-YYYYmmddHHMMSS/tunnels.json --yes
+```
+
+## 自动化部署 / 无人值守
+
+基础自动化入口：
+
+```bash
+XRAY_ONECLICK_ENDPOINT=example.com \
+XRAY_ONECLICK_TUNNEL_IMPORT=/root/tunnels.json \
+XRAY_ONECLICK_YES=1 \
+ike bootstrap
+```
+
+`ike bootstrap` 会安装/更新 Xray，按需写入 endpoint，导入 `XRAY_ONECLICK_TUNNEL_IMPORT` 指定的 Tunnel 规则，应用并校验配置，最后输出 `ike version`、Tunnel 列表和 `ike view doctor`。
+
+支持的环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `XRAY_ONECLICK_ENDPOINT` | 当 state 尚未设置自定义 endpoint 时写入连接入口；已有 endpoint 不会被覆盖 |
+| `XRAY_ONECLICK_TUNNEL_IMPORT` | `ike bootstrap` 要导入的 `tunnels.json` 路径，也可指向部署包目录 |
+| `XRAY_ONECLICK_YES=1` | 对明确支持自动确认的流程启用自动确认，例如 Tunnel 导入冲突自动改名 |
+| `XRAY_ONECLICK_TUNNEL_IMPORT_YES=1` | 仅用于 Tunnel 导入自动确认 |
+
+说明：
+
+- `XRAY_ONECLICK_YES=1` 不会绕过完整卸载这类危险确认。
+- Tunnel tag 冲突时自动改名，不覆盖、不删除原规则。
+- `XRAY_ONECLICK_ENDPOINT` 只在未设置自定义 endpoint 时生效；需要覆盖时请显式运行 `ike endpoint set`。
 
 ## 默认安全屏蔽
 
