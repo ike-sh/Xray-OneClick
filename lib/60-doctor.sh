@@ -118,14 +118,12 @@ doctor_reality_sni() {
 }
 
 doctor_reality_output() {
-    local public_key short_id sni
+    local public_key sni
 
     public_key="$(jq -r ".${REALITY_STATE_KEY}.public_key // empty" "$STATE_FILE" 2>/dev/null)"
-    short_id="$(jq -r ".${REALITY_STATE_KEY}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
     sni="$(jq -r ".${REALITY_STATE_KEY}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
     [[ -n "$sni" ]] && diag_info "SNI: ${sni}"
     [[ -n "$public_key" ]] && diag_info "PublicKey: ${public_key}"
-    [[ -n "$short_id" ]] && diag_info "ShortID: ${short_id}"
 }
 
 doctor_reality() {
@@ -425,7 +423,7 @@ run_xray_config_test_verbose() {
         diag_warn "xray 不存在，跳过 xray run -test"
         return 0
     fi
-    if "$BIN_PATH" run -test -c "$CONFIG_FILE"; then
+    if validate_config_file; then
         diag_ok "xray run -test 通过"
         return 0
     fi

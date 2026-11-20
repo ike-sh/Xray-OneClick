@@ -395,43 +395,57 @@ run_enc_xhttp_command() {
 
 show_hysteria2_usage() {
     cat <<'EOF'
-用法: ike hysteria2 <install|show|remove> [选项]
+用法: ike hysteria2 <install|show|remove|rotate-cert|rotate-credentials> [选项]
 
   install              安装 Hysteria2 (QUIC/TLS 自签证书 + Salamander obfs)
-    --port N           指定 UDP 端口 (默认 443)
-    --sni DOMAIN       自签证书伪装 SNI (默认随机)
+    --port N           指定 UDP 端口 (首装默认 443)
+    --sni DOMAIN       自签证书域名或 IPv4 (首装默认 localhost)
     --dry-run          仅生成配置预览，不写入真实配置
   show                 查看当前配置与分享链接
   remove               删除该协议入站及自签证书
+  rotate-cert --yes [--sni DOMAIN]
+                       轮换自签证书及私钥
+  rotate-credentials --yes
+                       轮换认证和 Salamander 密码
 
-说明: 需要 Xray-core v26+ 支持 Hysteria2;使用自签证书，客户端需允许不安全连接(insecure)。
+说明: 安装时会验证 Xray 的 Hysteria2 能力。兼容分享链接的 insecure=1 会跳过证书校验。
 EOF
 }
 
 run_hysteria2_command() {
     local action="${1:-show}"
+    local HY2_PORT_REQUEST="" HY2_SNI_REQUEST="" mode=cli confirmed=false
 
     case "$action" in
         help | -h | --help)
             show_hysteria2_usage
             ;;
-        install)
+        install | rotate-cert | rotate-credentials)
             shift
-            HY2_PORT_REQUEST=""
-            HY2_SNI_REQUEST=""
-            HY2_DRY_RUN="false"
             while [[ $# -gt 0 ]]; do
                 case "$1" in
                     --port)
-                        HY2_PORT_REQUEST="${2:-}"
-                        shift; shift
+                        if [[ "$action" != "install" ]] || ! validate_port "${2:-}"; then
+                            err "[Hysteria2] install --port 需要 1–65535 的端口。"
+                            return 1
+                        fi
+                        HY2_PORT_REQUEST="$2"
+                        shift 2
                         ;;
                     --sni)
-                        HY2_SNI_REQUEST="${2:-}"
-                        shift; shift
+                        if [[ "$action" == "rotate-credentials" ]] || ! is_valid_endpoint_hostname "${2:-}"; then
+                            err "[Hysteria2] --sni 需要有效的域名或 IPv4 地址。"
+                            return 1
+                        fi
+                        HY2_SNI_REQUEST="$2"
+                        shift 2
                         ;;
                     --dry-run)
-                        HY2_DRY_RUN="true"
+                        mode=dry-run
+                        shift
+                        ;;
+                    --yes)
+                        confirmed=true
                         shift
                         ;;
                     help | -h | --help)
@@ -439,26 +453,24 @@ run_hysteria2_command() {
                         return 0
                         ;;
                     *)
-                        err "[失败] 未知 hysteria2 install 参数: $1"
+                        err "[失败] 未知 hysteria2 $action 参数: $1"
                         show_hysteria2_usage
                         return 1
                         ;;
                 esac
             done
-            if [[ "$HY2_DRY_RUN" == "true" ]]; then
-                configure_hysteria2 "dry-run" && install_hysteria2
-            else
-                prepare_system || return 1
-                configure_hysteria2 "cli" && install_hysteria2
+            if [[ "$action" != "install" && ( "$confirmed" != "true" || "$mode" == "dry-run" ) ]]; then
+                err "[Hysteria2] 轮换会影响客户端，请使用 $action --yes 确认。"
+                return 1
             fi
+            install_hysteria2 "$mode" "$action"
             ;;
         show | "")
-            init_state || return 1
             print_hysteria2_result "show"
             ;;
         remove | delete | del)
-            prepare_system || return 1
-            remove_hysteria2_config
+            [[ $# -eq 1 ]] || { show_hysteria2_usage; return 1; }
+            with_xray_lock remove_managed_hysteria2
             ;;
         *)
             err "[失败] 未知 hysteria2 参数: $action"
@@ -466,6 +478,10 @@ run_hysteria2_command() {
             return 1
             ;;
     esac
+}
+
+remove_managed_hysteria2() {
+    prepare_system && check_xray_service_ownership && remove_hysteria2_config
 }
 
 show_advanced_profile_usage() {

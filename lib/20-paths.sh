@@ -6,21 +6,47 @@ ensure_root() {
 }
 
 check_os() {
-    if [[ -f /etc/alpine-release ]]; then
+    local ID=""
+    if [[ -f /etc/alpine-release && -z "${XRAY_ONECLICK_OS_RELEASE:-}" ]]; then
         OS_TYPE="alpine"
         INIT_SYSTEM="openrc"
     elif [[ -f "${XRAY_ONECLICK_OS_RELEASE:-/etc/os-release}" ]]; then
         # shellcheck disable=SC1090
         . "${XRAY_ONECLICK_OS_RELEASE:-/etc/os-release}"
         OS_TYPE="${ID:-linux}"
-        if command -v systemctl >/dev/null 2>&1; then
-            INIT_SYSTEM="systemd"
-        else
-            INIT_SYSTEM="unknown"
-        fi
+        case "$OS_TYPE" in
+            alpine) INIT_SYSTEM="openrc" ;;
+            debian | ubuntu | centos | rhel | rocky | almalinux | fedora) INIT_SYSTEM="systemd" ;;
+            *) INIT_SYSTEM="unknown" ;;
+        esac
     else
         die "无法识别系统类型。"
     fi
+}
+
+with_xray_lock() {
+    # The lock lives next to the config directory so uninstall cannot unlink it.
+    local lock_fd result previous_umask
+    [[ "${XRAY_LOCK_HELD:-false}" != "true" ]] || { "$@"; return; }
+    install_dependencies lock || return 1
+    previous_umask="$(umask)"
+    umask 077
+    { exec {lock_fd}<>"${CONFIG_DIR}.oneclick.lock"; } || true
+    umask "$previous_umask"
+    if [[ -z "${lock_fd:-}" ]] || ! flock -n "$lock_fd"; then
+        [[ -z "${lock_fd:-}" ]] || exec {lock_fd}>&-
+        err "[系统] 无法取得 Xray 配置锁，可能有其他安装或更新正在运行。"
+        return 1
+    fi
+    result=0
+    (
+        # Keep the lock in the caller and out of any daemon launched by the action.
+        exec {lock_fd}>&-
+        local XRAY_LOCK_HELD=true CONFIG_BACKUP_PATH=""
+        "$@"
+    ) || result=$?
+    exec {lock_fd}>&-
+    return "$result"
 }
 
 detect_arch() {
@@ -65,7 +91,11 @@ ensure_config_security() {
 }
 
 config_temp_file() {
-    mktemp "${CONFIG_FILE}.tmp.XXXXXX"
+    if [[ "${1:-false}" == "true" ]]; then
+        mktemp
+    else
+        mktemp "${CONFIG_FILE}.tmp.XXXXXX"
+    fi
 }
 
 state_temp_file() {

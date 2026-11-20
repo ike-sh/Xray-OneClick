@@ -31,10 +31,10 @@ state_set_socks5() {
 
 install_socks5() {
     echo -e "\n${YELLOW}[配置] SOCKS5 参数:${PLAIN}"
-    ask_port "SOCKS5 端口" "1080" S_PORT
-    read -r -p "用户 (默认: admin): " S_USER
+    ask_port "SOCKS5 端口" "1080" S_PORT || return 1
+    read -r -p "用户 (默认: admin): " S_USER || return 1
     S_USER="${S_USER:-admin}"
-    read -r -p "密码 (默认: 随机): " S_PASS
+    read -r -p "密码 (默认: 随机): " S_PASS || return 1
     S_PASS="${S_PASS:-$(openssl rand -hex 8)}"
     [[ -n "$S_PASS" ]] || S_PASS="$(generate_uuid | tr -d '-')"
     [[ -n "$S_PASS" ]] || return 1

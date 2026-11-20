@@ -2375,7 +2375,7 @@ configure_forward_menu() {
 }
 
 run_bootstrap_command() {
-    local import_file import_args=()
+    local import_file restart=if-active import_args=()
 
     [[ $# -eq 0 ]] || {
         err "[失败] bootstrap 不接受额外参数；Tunnel 导入请使用 XRAY_ONECLICK_TUNNEL_IMPORT。"
@@ -2385,12 +2385,11 @@ run_bootstrap_command() {
         err "[失败] Bootstrap 系统准备失败。"
         return 1
     }
-    install_or_update_xray || {
+    if [[ -z "${XRAY_ONECLICK_TUNNEL_IMPORT:-}" ]]; then restart=always; fi
+    install_or_update_xray false "$restart" || {
         err "[失败] Bootstrap 安装/更新 Xray 失败。"
         return 1
     }
-    apply_env_endpoint_if_needed || return 1
-
     if [[ -n "${XRAY_ONECLICK_TUNNEL_IMPORT:-}" ]]; then
         import_file="$(resolve_tunnel_import_file "$XRAY_ONECLICK_TUNNEL_IMPORT")" || return 1
         if tunnel_import_auto_yes_enabled; then
@@ -2403,11 +2402,6 @@ run_bootstrap_command() {
     else
         info "[Bootstrap] 未设置 XRAY_ONECLICK_TUNNEL_IMPORT，跳过 Tunnel 导入。"
     fi
-
-    apply_config "Bootstrap" || {
-        err "[失败] Bootstrap 配置应用失败。"
-        return 1
-    }
 
     echo
     show_version

@@ -217,8 +217,7 @@ run_test_config_generate_command() {
         hysteria2 | hy2)
             HY2_PORT_REQUEST="${port:-30012}"
             HY2_SNI_REQUEST="$sni"
-            HY2_DRY_RUN="true"
-            configure_hysteria2 "dry-run" && install_hysteria2
+            install_hysteria2 dry-run
             ;;
         *)
             err "[test] unknown profile: $profile"

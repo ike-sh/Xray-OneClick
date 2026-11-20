@@ -15,7 +15,7 @@ configure_ss2022() {
     echo -e "  1) 2022-blake3-aes-128-gcm ${GREEN}(推荐，兼容性好)${PLAIN}"
     echo "  2) 2022-blake3-aes-256-gcm"
     echo "  3) 2022-blake3-chacha20-poly1305"
-    read -r -p "选项 (默认: 1): " M_OPT
+    read -r -p "选项 (默认: 1): " M_OPT || return 1
 
     case "${M_OPT:-1}" in
         1) SS_METHOD="2022-blake3-aes-128-gcm" ;;

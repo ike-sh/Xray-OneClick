@@ -4,9 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INSTALL_SH="${REPO_ROOT}/install.sh"
-TEST_TMP_PARENT="${REPO_ROOT}/.tmp/tests"
-mkdir -p "$TEST_TMP_PARENT"
-TMP_DIR="$(mktemp -d "${TEST_TMP_PARENT}/config-generation.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ike-config-generation.XXXXXX")"
 TEST_BIN_DIR="${TMP_DIR}/bin"
 mkdir -p "$TEST_BIN_DIR"
 
@@ -97,7 +95,7 @@ run_xray_config_test_if_available() {
             echo "[SKIP] 缺少 openssl，无法准备测试证书: $config"
             return 0
         fi
-        "$XRAY_TEST_BIN" run -test -config "$config" >/dev/null ||
+        "$XRAY_TEST_BIN" run -test -c "$config" >/dev/null ||
             fail "xray run -test 未通过: $config"
         echo "[OK] xray run -test: $config"
     else
@@ -279,5 +277,56 @@ assert_xhttp_plain "$LAST_CONFIG" "$ENC_XHTTP_TAG"
 
 run_case "hysteria2" hysteria2 --port 30012 --sni www.microsoft.com
 assert_hysteria2 "$LAST_CONFIG" "$HY2_TAG"
+
+run_legacy_case() (
+    local profile="$1" IKE_TEST_ROOT="$TMP_DIR/$1/root"
+    echo "[CASE] $profile"
+    # shellcheck source=../install.sh
+    source "$INSTALL_SH"
+    setup_test_config_generation_env
+    install_or_update_xray() { :; }
+    restart_service() { :; }
+    view_config() { :; }
+    if [[ ! -x "$BIN_PATH" ]]; then
+        validate_config_file() { validate_json_object "$CONFIG_FILE"; }
+    fi
+    case "$profile" in
+        ss2022_ipv4)
+            configure_ss2022 ipv4 <<< $'1\n31010\n'
+            install_ss2022
+            jq -e '.inbounds[] | select(.tag == "ss2022-in" and .listen == "0.0.0.0")' "$CONFIG_FILE" >/dev/null
+            ;;
+        ss2022_ipv6)
+            configure_ss2022 ipv6 <<< $'2\n31011\n'
+            install_ss2022
+            jq -e '.inbounds[] | select(.tag == "ss2022-in" and .listen == "::")' "$CONFIG_FILE" >/dev/null
+            ;;
+        vless_encryption)
+            configure_vless_encryption <<< $'1\n1\n31012\n'
+            install_vless_encryption
+            jq -e '.inbounds[] | select(.tag == "vless-enc-in" and .protocol == "vless")' "$CONFIG_FILE" >/dev/null
+            ;;
+        socks5)
+            install_socks5 <<< $'31013\ntest-user\ntest-password\n'
+            jq -e '.inbounds[] | select(.tag == "socks-in" and .settings.udp == true)' "$CONFIG_FILE" >/dev/null
+            ;;
+        tunnel | tunnel_port_map)
+            FORWARD_LISTEN="127.0.0.1" FORWARD_LISTEN_PORT=31014 FORWARD_TARGET="127.0.0.1"
+            FORWARD_TARGET_PORT=8080 FORWARD_NETWORK=tcp,udp FORWARD_MODE=relay FORWARD_REMARK=""
+            if [[ "$profile" == "tunnel_port_map" ]]; then
+                FORWARD_TYPE=portMap
+                FORWARD_LISTEN_PORT=31015,31016
+                FORWARD_PORT_MAP_JSON='{"31015":"127.0.0.1:8080","31016":"127.0.0.1:8081"}'
+            fi
+            install_forward_rule
+            jq -e '.inbounds[] | select(.tag | startswith("tunnel-"))' "$CONFIG_FILE" >/dev/null
+            ;;
+    esac >"$IKE_TEST_ROOT/installer.log"
+    run_xray_config_test_if_available "$CONFIG_FILE"
+)
+
+for profile in ss2022_ipv4 ss2022_ipv6 vless_encryption socks5 tunnel tunnel_port_map; do
+    run_legacy_case "$profile"
+done
 
 echo "[OK] 离线配置生成测试全部通过"

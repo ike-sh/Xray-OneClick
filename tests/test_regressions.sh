@@ -3,8 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-mkdir -p "${REPO_ROOT}/.tmp"
-TMP_DIR="$(mktemp -d "${REPO_ROOT}/.tmp/regressions.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ike-regressions.XXXXXX")"
 MOCK_BIN="${TMP_DIR}/bin"
 MOCK_CURL_LOG="${TMP_DIR}/curl.log"
 
@@ -257,6 +256,7 @@ chmod +x "${MOCK_BIN}/ip"
 
 # shellcheck source=../install.sh
 source "${REPO_ROOT}/install.sh"
+ASSET_DIR="${TMP_DIR}/assets"
 
 test_public_ip_detection() {
     export PATH="${MOCK_BIN}:$PATH"
@@ -343,7 +343,46 @@ test_hysteria_remove_preserves_cert_on_failure() {
     echo "[OK] Hysteria2 删除回滚"
 }
 
-test_redacted_report_contains_no_client_credentials() {
+test_official_digest_fallback() (
+    XRAY_ASSET="Xray-linux-64.zip"
+    local official_url="https://github.com/XTLS/Xray-core/releases/download/v26.11.9/$XRAY_ASSET"
+    local fixture="$TMP_DIR/archive" download="$TMP_DIR/download" requests_log="$TMP_DIR/download.log" fixture_digest
+    printf '%s' official >"$fixture"
+    fixture_digest="$(sha256sum "$fixture" | cut -d' ' -f1)"
+    xray_release_metadata() {
+        jq -cn --arg asset "$XRAY_ASSET" --arg url "${mock_url:-$official_url}" --argjson pre "${mock_prerelease:-false}" '
+          {tag_name: "v26.11.9", prerelease: $pre, assets: [{name: $asset, browser_download_url: $url}]}
+        '
+    }
+    download_one_url() {
+        printf '%s\n' "$1" >>"$requests_log"
+        case "$1" in
+            "$official_url.dgst")
+                [[ "${mock_checksum:-true}" == "true" ]] || return 1
+                printf 'SHA2-256= %s\n' "$fixture_digest" >"$2"
+                ;;
+            "$official_url") cp "$fixture" "$2" ;;
+            *) return 1 ;;
+        esac
+    }
+    verify_xray_archive() { cmp -s "$1" "$fixture" && [[ "$3" == "v26.11.9" ]]; }
+    download_xray_core latest stable "$download" >/dev/null || fail "official .dgst fallback failed"
+    assert_eq "$official_url.dgst" "$(head -n 1 "$requests_log")" "fallback checksum must come from the official release"
+    : >"$requests_log"
+    if mock_checksum=false download_xray_core latest stable "$download" >/dev/null 2>&1; then
+        fail "asset installation succeeded without a trusted checksum"
+    fi
+    assert_eq "$official_url.dgst" "$(cat "$requests_log")" "archive or mirror was fetched before obtaining a checksum"
+    if mock_prerelease=true download_xray_core latest stable "$download" >/dev/null 2>&1; then
+        fail "stable channel accepted a prerelease"
+    fi
+    if mock_url=https://example.invalid/wrong.zip download_xray_core latest stable "$download" >/dev/null 2>&1; then
+        fail "release metadata supplied an unexpected asset URL"
+    fi
+    echo "[OK] 官方 .dgst 回退、缺摘要中止、发布通道及资产路径检查"
+)
+
+test_redacted_report_contains_no_client_credentials() (
     CONFIG_DIR="${TMP_DIR}/report"
     CONFIG_FILE="${CONFIG_DIR}/config.json"
     STATE_FILE="${CONFIG_DIR}/installer-state.json"
@@ -360,22 +399,32 @@ test_redacted_report_contains_no_client_credentials() {
 JSON
     cat >"$STATE_FILE" <<'JSON'
 {
+  "meta":{"last_action":"测试安装","last_updated_at":"2026-11-21T00:00:00Z"},
   "vless_reality":{"public_key":"public","default_short_id":"short","link":"vless://secret-uuid@example.com:443"},
-  "hysteria2":{"sni":"example.com","link":"hysteria2://hy-secret@example.com:8443"}
+  "hysteria2":{"port":8443,"sni":"example.com","auth":"hy-secret","link":"hysteria2://hy-secret@example.com:8443"}
 }
 JSON
     xray_service_status() { printf '%s' stopped; }
     xray_config_test_status() { printf '%s' skipped; }
     installed_protocols_summary() { printf '%s' test; }
     journalctl() { return 0; }
+    get_public_addresses() { PUBLIC_IPV4="" PUBLIC_IPV6=""; }
+    run_xray_config_test_verbose() { :; }
+    doctor_reality_port() { :; }
 
     local report
     report="$(render_export_report)"
     [[ "$report" != *'vless://'* && "$report" != *'hysteria2://'* ]] || fail "脱敏报告仍包含客户端链接"
     [[ "$report" != *'secret-uuid'* && "$report" != *'hy-secret'* ]] || fail "脱敏报告仍包含客户端凭据"
     [[ "$report" == *'***REDACTED***'* ]] || fail "脱敏报告未标记已脱敏字段"
+    report="$(view_config dual doctor)"
+    [[ "$report" != *'hy-secret'* && "$report" != *'hysteria2://'* && "$report" != *'vless://'* ]] ||
+        fail "完整诊断输出了客户端凭据"
+    [[ "$report" == *'测试安装'* && "$report" == *'2026-11-21T00:00:00Z'* ]] || fail "完整诊断缺少最近变更信息"
+    print_reality_result() { fail "smoke 不应显示客户端链接"; }
+    run_smoke_command reality >/dev/null
     echo "[OK] 脱敏诊断报告"
-}
+)
 
 test_vless_state_is_not_committed_before_apply() {
     CONFIG_DIR="${TMP_DIR}/vless"
@@ -474,6 +523,7 @@ test_keep_config_uninstall_scope
 test_purge_aborts_when_backup_fails
 test_public_ip_detection
 test_prerelease_asset_selection_and_digest
+test_official_digest_fallback
 test_hysteria_remove_preserves_cert_on_failure
 test_redacted_report_contains_no_client_credentials
 test_vless_state_is_not_committed_before_apply

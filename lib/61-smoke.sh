@@ -10,11 +10,10 @@ smoke_reality() {
         diag_info "Reality 未安装，跳过 Reality smoke"
         return 0
     fi
-    print_reality_result "show"
     cnblock_reality_risk_notice
     run_xray_config_test_verbose || print_reality_failure_hint
     if [[ "$restart" == "true" ]]; then
-        if restart_xray_service; then
+        if restart_service; then
             diag_ok "xray restart 成功"
         else
             diag_fail "xray restart 失败，最近日志如下"
@@ -40,14 +39,13 @@ smoke_xhttp() {
         diag_info "XHTTP-FinalMask 未安装，跳过 XHTTP smoke"
         return 0
     fi
-    print_vless_xhttp_finalmask_result "show"
     if ! run_xray_config_test_verbose; then
         fm_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
         [[ "$fm_enabled" == "true" ]] && print_finalmask_failure_hint
         print_xhttp_failure_hint
     fi
     if [[ "$restart" == "true" ]]; then
-        if restart_xray_service; then
+        if restart_service; then
             diag_ok "xray restart 成功"
         else
             diag_fail "xray restart 失败，最近日志如下"
@@ -80,7 +78,6 @@ smoke_advanced_profile() {
         diag_info "${name} 未安装，跳过 smoke"
         return 0
     fi
-    print_advanced_profile_result "$kind" "show"
     cnblock_reality_risk_notice
     if ! run_xray_config_test_verbose; then
         if advanced_profile_has_finalmask "$kind"; then
@@ -90,7 +87,7 @@ smoke_advanced_profile() {
         print_apply_failure_hint "$kind"
     fi
     if [[ "$restart" == "true" ]]; then
-        if restart_xray_service; then
+        if restart_service; then
             diag_ok "xray restart 成功"
         else
             diag_fail "xray restart 失败，最近日志如下"
@@ -128,6 +125,15 @@ run_smoke_command() {
         shift
     done
 
+    if [[ "$restart" == "true" ]]; then
+        with_xray_lock run_smoke_target "$target" "$restart"
+    else
+        run_smoke_target "$target" "$restart"
+    fi
+}
+
+run_smoke_target() {
+    local target="$1" restart="$2"
     case "$target" in
         reality) smoke_reality "$restart" ;;
         xhttp) smoke_xhttp "$restart" ;;

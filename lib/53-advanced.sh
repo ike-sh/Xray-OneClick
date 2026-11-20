@@ -665,7 +665,7 @@ install_advanced_profile() {
     fallback_limit_upload="${ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON:-null}"
     fallback_limit_download="${ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON:-null}"
 
-    tmp="$(config_temp_file)" || return 1
+    tmp="$(config_temp_file "${ADVANCED_DRY_RUN:-false}")" || return 1
     if ! MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg tag "$tag" \
         --arg port "$ADVANCED_PORT" \
         --arg uuid "$ADVANCED_UUID" \

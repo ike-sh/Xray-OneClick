@@ -260,15 +260,21 @@ query_public_ip_source() {
     local version="$1"
     local source="$2"
     local curl_flag="-4"
-    local result
+    local response result
     local connect_timeout="${XRAY_ONECLICK_IP_CONNECT_TIMEOUT:-2}"
     local max_time="${XRAY_ONECLICK_IP_MAX_TIME:-4}"
 
     [[ "$version" == "4" || "$version" == "6" ]] || return 1
     [[ "$version" == "6" ]] && curl_flag="-6"
-    command -v curl >/dev/null 2>&1 || return 1
-
-    result="$(curl -fsS "$curl_flag" --noproxy '*' --connect-timeout "$connect_timeout" --max-time "$max_time" "$source" 2>/dev/null | tr -d '\r' | awk 'NF{print $1; exit}' || true)"
+    if command -v curl >/dev/null 2>&1; then
+        response="$(curl -fsS "$curl_flag" --noproxy '*' --connect-timeout "$connect_timeout" --max-time "$max_time" "$source" 2>/dev/null)" || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        # BusyBox wget lacks -4/-6. Validate the response family below.
+        response="$(timeout "$max_time" wget -Y off -q -T "$connect_timeout" -O - "$source" 2>/dev/null)" || return 1
+    else
+        return 1
+    fi
+    result="$(tr -d '\r' <<<"$response" | awk 'NF{print $1; exit}')"
     if [[ "$version" == "4" ]]; then
         is_public_ipv4 "$result" || return 1
     else

@@ -4,6 +4,8 @@
 set -o pipefail
 
 IKE_INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IKE_SCRIPT_PATH="${IKE_INSTALLER_DIR}/${BASH_SOURCE[0]##*/}"
+if [[ "$IKE_SCRIPT_PATH" == */ ]]; then IKE_SCRIPT_PATH+="install.sh"; fi
 IKE_REPOSITORY="${XRAY_ONECLICK_REPO:-ike-sh/Xray-OneClick}"
 IKE_REF="${XRAY_ONECLICK_REF:-main}"
 IKE_LIB_RAW_BASE="${IKE_LIB_RAW_BASE:-https://raw.githubusercontent.com/${IKE_REPOSITORY}/${IKE_REF}/lib}"
@@ -64,12 +66,12 @@ ike_ensure_lib_modules() {
     for module in "${missing[@]}"; do
         tmp_module="$(mktemp "${lib_dir}/.${module}.XXXXXX")" || return 1
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL "${IKE_LIB_RAW_BASE}/${module}" -o "$tmp_module" || {
+            curl -fsSL --connect-timeout 10 --max-time 30 --retry 1 "${IKE_LIB_RAW_BASE}/${module}" -o "$tmp_module" || {
                 rm -f "$tmp_module"
                 return 1
             }
         else
-            wget -qO "$tmp_module" "${IKE_LIB_RAW_BASE}/${module}" || {
+            wget -q -T 20 -O "$tmp_module" "${IKE_LIB_RAW_BASE}/${module}" || {
                 rm -f "$tmp_module"
                 return 1
             }
@@ -86,13 +88,18 @@ ike_ensure_lib_modules() {
     done
 }
 
-if ! ike_ensure_lib_modules "$IKE_INSTALLER_DIR"; then
-    if [[ "$IKE_INSTALLER_DIR" != "/usr/local/share/ike" ]] && ike_ensure_lib_modules "/usr/local/share/ike"; then
-        IKE_INSTALLER_DIR="/usr/local/share/ike"
-    else
-        exit 1
-    fi
-fi
+for ike_module in "${IKE_LIB_MODULES[@]}"; do
+    [[ -s "$IKE_INSTALLER_DIR/lib/$ike_module" ]] && continue
+    # Standalone installers and previews fetch a private, consistent module set.
+    IKE_MODULE_STAGE="$(mktemp -d)" || exit 1
+    trap 'rm -rf -- "$IKE_MODULE_STAGE"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    ike_ensure_lib_modules "$IKE_MODULE_STAGE" || exit 1
+    IKE_INSTALLER_DIR="$IKE_MODULE_STAGE"
+    break
+done
+unset ike_module
 
 # shellcheck source=lib/00-bootstrap.sh disable=SC1091
 source "${IKE_INSTALLER_DIR}/lib/00-bootstrap.sh"
@@ -127,21 +134,41 @@ main() {
         return $?
     fi
 
-    # 通过管道启动（curl ... | sudo bash）时本进程 stdin 已被占用/为 EOF，
-    # 交互式 read 会立即失败导致菜单空转退出；若存在终端则把 stdin 接回 /dev/tty
-    if [[ ! -t 0 && -r /dev/tty ]]; then
-        exec </dev/tty
-    fi
-
     ensure_root
     check_os
     detect_arch
-    apply_env_endpoint_if_needed || return 1
+    if [[ $# -eq 0 ]]; then
+        # bootstrap via a pipe needs its controlling terminal for the menu.
+        local menu_tty
+        if [[ ! -t 0 ]] && { exec {menu_tty}</dev/tty; } 2>/dev/null; then
+            exec <&"$menu_tty"
+            exec {menu_tty}<&-
+        fi
+        show_menu
+        return
+    fi
 
-    case "${1:-}" in
-        "")
-            show_menu
+    case "$1:${2:-}" in
+        view:* | doctor:* | smoke:* | export:* | logs:* | xray:version | xray: | hysteria2:*)
+            run_installer_action "$@"
+            return
             ;;
+        migrate:* | uninstall:* | xray:upgrade | reality:install | xhttp:install | enc-finalmask:install | \
+        enc-xhttp:install | xhttp-reality:install | enc-reality:install | fullstack:install)
+            local arg
+            for arg in "$@"; do
+                if [[ "$arg" == "--dry-run" ]]; then
+                    run_installer_action "$@"
+                    return
+                fi
+            done
+            ;;
+    esac
+    with_xray_lock run_installer_action "$@"
+}
+
+run_installer_action() {
+    case "${1:-}" in
         view)
             shift
             run_view_command "$@"

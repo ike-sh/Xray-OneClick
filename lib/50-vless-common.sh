@@ -1,25 +1,12 @@
 #!/usr/bin/env bash
 # VLESS Encryption pair generation helpers.
 
-# Ensure Xray is installed AND new enough to expose the `vlessenc` subcommand.
-# If an existing binary is too old to support VLESS Encryption, force an upgrade
-# once and re-probe. Must only be called from real (non dry-run) flows.
+xray_supports_vlessenc() {
+    timeout 10 "$1" vlessenc 2>/dev/null | grep '"decryption"' >/dev/null
+}
+
 ensure_xray_vlessenc() {
-    install_or_update_xray || return 1
-    # Test/offline environments may not ship a runnable xray; skip capability probing.
-    [[ -x "$BIN_PATH" ]] || return 0
-    if "$BIN_PATH" vlessenc >/dev/null 2>&1; then
-        return 0
-    fi
-    info "[VLESS] 当前 Xray 不支持 vlessenc 子命令，尝试强制升级到最新版本后重试..."
-    if ! install_or_update_xray true; then
-        err "[VLESS] 自动升级 Xray 失败，请手动执行菜单「安装/更新 Xray 核心」后重试。"
-        return 1
-    fi
-    if ! "$BIN_PATH" vlessenc >/dev/null 2>&1; then
-        err "[VLESS] 升级后 Xray 仍不支持 vlessenc，请确认所用 Xray-core 版本支持 VLESS Encryption。"
-        return 1
-    fi
+    install_or_update_xray false if-active xray_supports_vlessenc
 }
 
 generate_vless_encryption_pair() {

@@ -67,19 +67,19 @@ render_export_report() {
     echo "高级协议组合摘要:"
     if inbound_exists "$VLESS_XHTTP_REALITY_TAG"; then
         jq -r --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  XHTTP-Reality port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none")"' "$CONFIG_FILE"
-        jq -r ".${VLESS_XHTTP_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") flow=\(.flow // \"none\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_XHTTP_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") flow=\(.flow // \"none\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  XHTTP-Reality: 未安装"
     fi
     if inbound_exists "$VLESS_ENC_REALITY_TAG"; then
         jq -r --arg tag "$VLESS_ENC_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  Enc-Reality port=\(.port) sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none")"' "$CONFIG_FILE"
-        jq -r ".${VLESS_ENC_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") flow=\(.flow // \"none\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_ENC_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") flow=\(.flow // \"none\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  Enc-Reality: 未安装"
     fi
     if inbound_exists "$VLESS_FULLSTACK_TAG"; then
         jq -r --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag) | "  FullStack port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
-        jq -r ".${VLESS_FULLSTACK_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") flow=\(.flow // \"none\") finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_FULLSTACK_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") flow=\(.flow // \"none\") finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  FullStack: 未安装"
     fi

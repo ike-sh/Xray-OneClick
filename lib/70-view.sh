@@ -15,7 +15,6 @@ view_config() {
         return 1
     fi
 
-    init_state || return 1
     get_public_addresses
     host_candidates "$mode"
     CURRENT_LINK_VIEW_MODE="$mode"
@@ -46,6 +45,10 @@ view_config() {
         echo -e "Xray 服务状态: ${YELLOW}$(xray_service_status)${PLAIN}"
         [[ -n "$PUBLIC_IPV4" ]] && echo -e "公网 IPv4: ${PUBLIC_IPV4}"
         [[ -n "$PUBLIC_IPV6" ]] && echo -e "公网 IPv6: ${PUBLIC_IPV6}"
+        echo -e "已安装协议: ${YELLOW}$(installed_protocols_summary)${PLAIN}"
+        list_forward_rules
+        show_footer
+        return 0
     elif [[ -z "$IPV4_HOST" && -z "$IPV6_HOST" ]]; then
         info "[提示] 未检测到公网地址，请使用 ike endpoint set 手动设置连接入口。"
     fi
@@ -128,10 +131,6 @@ view_config() {
         elif [[ "$mode" == "ipv6" ]]; then
             print_ipv6_status_hint "$SOCKS_TAG" "socks5"
         fi
-    fi
-
-    if [[ "$detail" == "doctor" ]]; then
-        list_forward_rules
     fi
 
     show_footer

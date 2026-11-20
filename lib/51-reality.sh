@@ -506,7 +506,7 @@ xray_test_temp_config() {
         return 0
     fi
     echo "[!] 临时配置 xray run -test 未通过，真实配置未被修改。"
-    sed -n '1,80p' "$log_file"
+    sed -n '1,80p' "$log_file" | redact_sensitive_stream
     rm -f "$log_file"
     return 0
 }
@@ -515,7 +515,7 @@ write_test_config_out() {
     local config_path="$1"
     local output="${IKE_CONFIG_OUT:-}"
 
-    [[ -n "$output" ]] || return 0
+    [[ -n "$output" ]] && env_truthy "${IKE_TEST_MODE:-}" || return 0
     mkdir -p "$(dirname "$output")" || return 1
     cp "$config_path" "$output" || return 1
     chmod 600 "$output" 2>/dev/null || true
@@ -574,7 +574,7 @@ install_reality() {
         clients_json="$(jq -cn --arg uuid "$REALITY_UUID" '[{"id": $uuid, "email": "reality@xray"}]')" || return 1
     fi
 
-    tmp="$(config_temp_file)" || return 1
+    tmp="$(config_temp_file "${REALITY_DRY_RUN:-false}")" || return 1
     if ! MSYS2_ENV_CONV_EXCL="REALITY_JQ_SPIDER_X" REALITY_JQ_SPIDER_X="$REALITY_SPIDER_X" jq --arg tag "$REALITY_TAG" \
         --arg defender_tag "$REALITY_DEFENDER_TAG" \
         --arg block "$BLOCK_OUTBOUND_TAG" \

@@ -86,8 +86,10 @@ Xray-OneClick 命令帮助
   ike enc-xhttp remove
   ike hysteria2 install
   ike hysteria2 install --dry-run
-  ike hysteria2 install --port 443 --sni www.microsoft.com
+  ike hysteria2 install --port 443 --sni vpn.example.org
   ike hysteria2 show
+  ike hysteria2 rotate-cert --sni vpn.example.org --yes
+  ike hysteria2 rotate-credentials --yes
   ike hysteria2 remove
   ike view reality
   ike view xhttp

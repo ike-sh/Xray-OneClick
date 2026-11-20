@@ -1,43 +1,147 @@
 #!/usr/bin/env bash
 # System prep, preflight, ports, and shared utilities.
 
-install_dependencies() {
-    local missing=()
-    local tool
-
-    for tool in bash curl wget jq unzip tar openssl; do
-        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+trusted_ca_available() {
+    local bundle
+    if [[ -n "${SSL_CERT_FILE:-}" ]]; then
+        [[ -r "$SSL_CERT_FILE" && -s "$SSL_CERT_FILE" ]]
+        return
+    fi
+    for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+        [[ -r "$bundle" && -s "$bundle" ]] && return 0
     done
+    return 1
+}
 
-    [[ ${#missing[@]} -eq 0 ]] && return 0
-
-    info "[系统] 补全依赖: ${missing[*]}"
-
+# Output each missing command (or capability) and the package that provides it.
+missing_dependencies() {
+    local tool network_package=iproute2 socket_package=iproute2 lock_package=util-linux
     case "$OS_TYPE" in
-        alpine)
-            apk update
-            apk add --no-cache bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps net-tools
-            command -v rc-service >/dev/null 2>&1 || apk add --no-cache openrc
+        alpine) network_package=iproute2-minimal; socket_package=iproute2-ss; lock_package=flock ;;
+        centos | rhel | rocky | almalinux | fedora) network_package=iproute; socket_package=iproute ;;
+    esac
+
+    if [[ "${1:-}" == "lock" ]]; then
+        if ! command -v flock >/dev/null 2>&1; then
+            printf 'flock %s\n' "$lock_package"
+        fi
+        return 0
+    fi
+    for tool in bash jq tar openssl awk sed grep find cmp diff; do
+        command -v "$tool" >/dev/null 2>&1 && continue
+        case "$tool" in
+            awk) printf 'awk gawk\n' ;;
+            find) printf 'find findutils\n' ;;
+            cmp | diff) printf '%s diffutils\n' "$tool" ;;
+            *) printf '%s %s\n' "$tool" "$tool" ;;
+        esac
+    done
+    if ! command -v unzip >/dev/null || ! unzip -v >/dev/null 2>&1; then
+        printf 'unzip unzip\n'
+    fi
+    for tool in base64 basename cat chmod chown cp cut date df dirname head id install ln mkdir mktemp mv \
+        od readlink realpath rm rmdir sha256sum sleep sort stat tail tee timeout touch tr uniq wc; do
+        command -v "$tool" >/dev/null 2>&1 || printf '%s coreutils\n' "$tool"
+    done
+    command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || printf 'curl/wget curl\n'
+    trusted_ca_available || printf 'CA证书 ca-certificates\n'
+    command -v ip >/dev/null 2>&1 || printf 'ip %s\n' "$network_package"
+    command -v ss >/dev/null 2>&1 || command -v netstat >/dev/null 2>&1 || printf 'ss/netstat %s\n' "$socket_package"
+    missing_dependencies lock
+    case "$INIT_SYSTEM" in
+        systemd) command -v systemctl >/dev/null 2>&1 || printf 'systemctl systemd\n' ;;
+        openrc)
+            for tool in rc-service rc-update; do
+                command -v "$tool" >/dev/null 2>&1 || printf '%s openrc\n' "$tool"
+            done
             ;;
-        ubuntu | debian)
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps
-            ;;
+        *) printf 'systemd/OpenRC -\n' ;;
+    esac
+    return 0
+}
+
+dependency_manager() {
+    case "$OS_TYPE" in
+        alpine) command -v apk >/dev/null && printf '%s' apk ;;
+        ubuntu | debian) command -v apt-get >/dev/null && printf '%s' apt-get ;;
         centos | rhel | rocky | almalinux | fedora)
-            if command -v dnf >/dev/null 2>&1; then
-                dnf install -y bash curl wget unzip tar openssl ca-certificates jq coreutils iproute procps-ng
+            if command -v dnf >/dev/null; then
+                printf '%s' dnf
+            elif command -v yum >/dev/null; then
+                printf '%s' yum
             else
-                yum install -y epel-release >/dev/null 2>&1 || true
-                yum install -y bash curl wget unzip tar openssl ca-certificates jq coreutils iproute procps-ng
+                return 1
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+retry_package_command() {
+    local attempt rc
+    for attempt in 1 2; do
+        if "$@"; then
+            return 0
+        else
+            rc=$?
+        fi
+        err "[系统] $1 执行失败（第 $attempt/2 次，退出码 $rc）"
+    done
+    return "$rc"
+}
+
+install_dependencies() {
+    local profile="${1:-}" tool package manager missing
+    local -a tools_needed=() packages=()
+
+    missing="$(missing_dependencies "$profile")"
+    [[ -n "$missing" ]] || return 0
+    while read -r tool package; do
+        tools_needed+=("$tool")
+        if [[ " ${packages[*]} " != *" $package "* ]]; then
+            packages+=("$package")
+        fi
+    done <<<"$missing"
+    info "[系统] 缺少依赖: ${tools_needed[*]}"
+    if ! manager="$(dependency_manager)" || [[ " ${packages[*]} " == *" - "* ]]; then
+        err "[系统] 无可用的包管理器或服务管理器（$OS_TYPE / $INIT_SYSTEM）。请手动补齐: ${tools_needed[*]}"
+        return 1
+    fi
+
+    info "[系统] 使用 $manager 安装: ${packages[*]}"
+    local result=0
+    case "$manager" in
+        apk) retry_package_command apk add --no-cache "${packages[@]}" || result=$? ;;
+        apt-get)
+            local -a apt_options=(-o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+            local DEBIAN_FRONTEND=noninteractive
+            export DEBIAN_FRONTEND
+            if retry_package_command apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update; then
+                retry_package_command apt-get "${apt_options[@]}" install -y --no-install-recommends "${packages[@]}" || result=$?
+            else
+                result=$?
             fi
             ;;
         *)
-            err "[系统] 未识别的发行版: $OS_TYPE"
-            err "请先手动安装: bash curl wget jq unzip openssl ca-certificates"
-            return 1
+            retry_package_command "$manager" --setopt=retries=1 --setopt=timeout=20 install -y "${packages[@]}" || result=$?
             ;;
     esac
+    hash -r
+    if ((result == 0)) && [[ -z "${SSL_CERT_FILE:-}" && " ${packages[*]} " == *" ca-certificates "* ]] &&
+        ! trusted_ca_available; then
+        if command -v update-ca-certificates >/dev/null; then
+            update-ca-certificates || result=$?
+        elif command -v update-ca-trust >/dev/null; then
+            update-ca-trust extract || result=$?
+        fi
+    fi
+    missing="$(missing_dependencies "$profile")"
+    if ((result != 0)) || [[ -n "$missing" ]]; then
+        err "[系统] 依赖准备失败（$manager 退出码 $result）。请检查软件源、DNS、TLS 根证书和网络，再安装: ${packages[*]}"
+        [[ -z "$missing" ]] || err "[系统] 仍缺少（工具 / 包）: $missing"
+        return 1
+    fi
+    info "[系统] 依赖复核通过。"
 }
 
 enable_bbr() {
@@ -60,15 +164,18 @@ EOF
 }
 
 prepare_system() {
-    [[ -n "${OS_TYPE:-}" ]] || check_os
-    [[ -n "${XRAY_ASSET:-}" ]] || detect_arch
+    [[ -n "${OS_TYPE:-}" ]] || check_os || return 1
+    [[ -n "${XRAY_ASSET:-}" ]] || detect_arch || return 1
     info "[系统] 环境: $OS_TYPE ($INIT_SYSTEM) / 架构: $ARCH / 资产: ${XRAY_ASSET:-未知}"
     install_dependencies || return 1
+    service_manager_ready || return 1
     install_shortcut || {
         err "[系统] 安装 ike 快捷命令失败。"
         return 1
     }
-    enable_bbr || info "[系统] BBR 启用失败，已继续安装 Xray。"
+    if env_truthy "${XRAY_ONECLICK_ENABLE_BBR:-}"; then
+        enable_bbr || info "[系统] BBR 启用失败，已继续安装 Xray。"
+    fi
 }
 
 preflight_root() {
@@ -170,6 +277,29 @@ preflight_init_system() {
     esac
 }
 
+preflight_xray() {
+    local installed
+    if installed="$(detect_xray_version)"; then
+        diag_ok "Xray $installed 可运行"
+    elif [[ -e "$BIN_PATH" || -L "$BIN_PATH" ]]; then
+        diag_fail "无法运行 Xray 二进制: $BIN_PATH"
+        return 1
+    else
+        diag_info "Xray 尚未安装"
+    fi
+    if [[ -e "$CONFIG_FILE" || -L "$CONFIG_FILE" ]]; then
+        if [[ -n "$installed" && "$installed" != "未安装" ]]; then
+            validate_config_file || return 1
+            diag_ok "现有配置通过 Xray 校验"
+        else
+            validate_json_object "$CONFIG_FILE" || return 1
+            diag_ok "现有配置是有效的 JSON 对象"
+        fi
+    else
+        diag_info "尚未创建 config.json"
+    fi
+}
+
 preflight_disk() {
     local free_kb human
 
@@ -187,42 +317,13 @@ preflight_disk() {
 }
 
 preflight_network_tools() {
-    local missing_critical=()
-    local missing_optional=()
-    local tool
-
-    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-        missing_critical+=("curl或wget")
-    fi
-    for tool in jq unzip openssl; do
-        command -v "$tool" >/dev/null 2>&1 || missing_critical+=("$tool")
-    done
-    for tool in tar awk sed grep; do
-        command -v "$tool" >/dev/null 2>&1 || missing_optional+=("$tool")
-    done
-    if [[ "${INIT_SYSTEM:-}" == "systemd" ]]; then
-        for tool in systemctl journalctl; do
-            command -v "$tool" >/dev/null 2>&1 || missing_optional+=("$tool")
-        done
-    elif [[ "${INIT_SYSTEM:-}" == "openrc" ]]; then
-        for tool in rc-service rc-update; do
-            command -v "$tool" >/dev/null 2>&1 || missing_critical+=("$tool")
-        done
-    fi
-    if ! command -v ss >/dev/null 2>&1 && ! command -v netstat >/dev/null 2>&1; then
-        missing_optional+=("ss或netstat")
-    fi
-
-    if ((${#missing_critical[@]} > 0)); then
-        diag_fail "缺少关键依赖: ${missing_critical[*]}"
+    local missing
+    missing="$(missing_dependencies)"
+    if [[ -n "$missing" ]]; then
+        diag_fail "缺少必需依赖（工具 / 包）: $missing"
         return 1
     fi
-    diag_ok "关键依赖可用"
-    if ((${#missing_optional[@]} > 0)); then
-        diag_warn "缺少可选工具: ${missing_optional[*]}"
-    else
-        diag_ok "常用诊断工具可用"
-    fi
+    diag_ok "必需依赖可用（含 CA 证书和网络诊断）"
 }
 
 preflight_ports() {
@@ -246,15 +347,22 @@ preflight_system() {
     preflight_os || failed="true"
     preflight_init_system || failed="true"
     preflight_arch || failed="true"
+    diag_info "内核: $(uname -r)"
     preflight_disk || failed="true"
     preflight_network_tools || failed="true"
     preflight_ports || true
+    if service_manager_ready; then
+        diag_info "Xray 服务: $(xray_service_status)"
+    else
+        failed="true"
+    fi
+    preflight_xray || failed="true"
     [[ "$failed" != "true" ]]
 }
 
 validate_port() {
     local port="$1"
-    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
     ((10#$port >= 1 && 10#$port <= 65535)) || return 1
     return 0
 }
@@ -296,17 +404,18 @@ ask_port() {
     local input use_anyway
 
     while true; do
-        read -r -p "${prompt} (默认: ${default_port}): " input
+        read -r -p "${prompt} (默认: ${default_port}): " input || return 1
         input="${input:-$default_port}"
 
         if ! validate_port "$input"; then
             err "端口无效，请输入 1-65535 之间的数字。"
             continue
         fi
+        input=$((10#$input))
 
         if ! check_port "$input"; then
             info "[提示] 端口 ${input} 当前可能已被占用。"
-            read -r -p "仍然写入配置? [y/N]: " use_anyway
+            read -r -p "仍然写入配置? [y/N]: " use_anyway || return 1
             [[ "$use_anyway" =~ ^[yY]$ ]] || continue
         fi
 
@@ -442,7 +551,7 @@ port_used_in_config() {
     [[ -f "$CONFIG_FILE" ]] || return 1
     validate_port "$port" || return 1
     command -v jq >/dev/null 2>&1 || return 1
-    jq -e --argjson port "$port" 'any(.inbounds[]?; (.port? // empty) == $port)' "$CONFIG_FILE" >/dev/null 2>&1
+    jq -e --argjson port "$((10#$port))" 'any(.inbounds[]?; (.port? // empty) == $port)' "$CONFIG_FILE" >/dev/null 2>&1
 }
 
 random_free_port() {

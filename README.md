@@ -4,13 +4,9 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Hysteria2，以及高级协议组合与 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：**1.1.22**（与 `VERSION` / `ike version` 一致）
+当前版本：**1.1.23**（与 `VERSION` / `ike version` 一致）
 
-状态：正式版
-
-本次版本：1.1.22 完成全量逻辑审计，移除全部历史 `sb` / sing-box 遗留，修复公网 Endpoint 探测与配置事务回滚，并为所有 REALITY 配置显式加入 `"minClientVer": "0.0.0"`；已通过无缓存 Docker 全量测试。
-
-说明：1.1.21 为健壮性补丁：SOCKS5 安装/状态写入由 `jq … && mv` 改为严谨写法（jq 失败即报错回滚，不再静默误报成功）；修复 CLI 取值类 `--flag` 置于命令末尾且缺省值时 `shift 2` 导致的参数解析死循环（改为 `shift; shift`，缺值时回落到交互/默认值）；并完成全仓逐文件 BUG 走查。1.1.20 修复了一个会导致 **Alpine 安装直接失败的关键 BUG**：`detect_arch` 之前在 Alpine 上拼接 `-musl` 后缀去下载 `Xray-linux-64-musl.zip`，但官方 XTLS/Xray-core 根本不发布 `-musl` 包（Linux 构建为 `CGO_ENABLED=0` 静态 Go 二进制，在 musl/glibc 上均可直接运行），导致 Alpine 下载不到资产而安装失败；现统一使用官方标准包（如 `Xray-linux-64.zip`）。1.1.19 将引导脚本改为 POSIX `sh`（Alpine 自动 `apk add bash`）、放行 `preflight` 更多架构、OpenRC `need net` 改 `use net`。版本来源：官方 XTLS/Xray-core，默认安装 `latest`（当前 v26.3.27）；VLESS Encryption / FinalMask(sudoku) / Hysteria2 等高级特性需 Xray-core v26+。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
+默认从 XTLS/Xray-core 官方 Releases API 解析最新 Stable。2026-11-21 核对的正式版为 v26.11.9，测试同时覆盖历史基准 v26.3.27。安装时根据实际协议配置检查核心能力。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`，高级 REALITY 组合可通过 `--flow vision` 显式启用。[Xray-core v26.11.9](https://github.com/XTLS/Xray-core/releases/tag/v26.11.9)
 
 ## 功能特性
 
@@ -41,13 +37,16 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 - Debian 12+ / Ubuntu 22.04+（systemd）
 - **Alpine Linux 3.18+（OpenRC）**
+- RHEL、Rocky、AlmaLinux、Fedora（systemd，依赖须在已启用的软件源中可用）
 - root 权限
 - amd64 / arm64
 - curl 或 wget
 
 Alpine 直接使用官方静态 Xray Linux 包（如 `Xray-linux-64.zip`）。官方 Xray-core 的 Linux 构建是 `CGO_ENABLED=0` 的静态 Go 二进制，在 glibc 与 musl(Alpine) 上均可直接运行，官方并不单独发布 `-musl` 包；服务使用 `/etc/init.d/xray`（OpenRC）管理。
 
-脚本会自动补齐常用依赖，例如 `jq`、`unzip`、`tar`、`openssl`。端口监听检查优先使用 `ss`，没有 `ss` 时会降级处理。
+脚本按缺项安装并复核 `jq`、`unzip`、`tar`、`openssl`、CA 证书、网络工具及对应的服务管理工具。下载工具满足 `curl` 或 `wget` 之一即可。Hysteria2 安装会使用 `ss` 或 `netstat` 检查 UDP 监听。包管理器或依赖复核失败时会停止部署。
+
+普通安装默认保留系统的拥塞控制设置。如需启用 BBR，可在安装时设置 `XRAY_ONECLICK_ENABLE_BBR=1`（在支持 BBR 的 systemd 系统上）。
 
 安装前可先执行：
 
@@ -143,7 +142,7 @@ stable 适合生产，prerelease 适合测试最新 XHTTP / REALITY / FinalMask 
 ```bash
 ike xray upgrade --xray-channel stable
 ike xray upgrade --xray-channel prerelease
-XRAY_VERSION=v26.3.27 XRAY_CHANNEL=prerelease ike xray upgrade
+XRAY_VERSION=v26.3.27 XRAY_CHANNEL=stable ike xray upgrade
 ```
 
 ## 主菜单
@@ -201,7 +200,7 @@ ike export clients --output /root/xray-clients.txt
 ike export report --output /root/xray-report.txt
 ```
 
-`doctor` 用于检查环境、配置和状态；`smoke` 用于服务侧快速排障。`smoke` 默认不会重启服务，只有加 `--restart` 时才会重启：
+`doctor` 用于检查环境、配置和状态。`smoke` 用于服务侧快速排障，可通过 `--restart` 重启服务。客户端凭据通过 `ike view` 或 `ike export clients` 查看。
 
 ```bash
 ike smoke reality --restart
@@ -215,7 +214,7 @@ ike smoke fullstack --restart
 bash tests/test_config_generation.sh
 ```
 
-测试会覆盖普通 Reality、XHTTP FinalMask on/off、高级 Reality 组合、FullStack 和 `--fallback-limit conservative`。如果环境中存在 `xray`，测试会自动执行 `xray run -test -config <config>`；没有 `xray` 时会明确输出 skip 原因。
+配置测试覆盖 SS2022、IPv6 SS2022、VLESS Encryption、REALITY、XHTTP、FinalMask、高级组合、SOCKS5、Tunnel 和 Hysteria2。设置 `XRAY_BIN` 或将 `xray` 加入 PATH 后，测试会用真实核心执行 `xray run -test -c <config>`。
 
 推荐通过项目自带的 Docker 测试镜像执行完整检查：
 
@@ -224,9 +223,32 @@ docker build --no-cache -f Dockerfile.test -t xray-oneclick-test .
 docker run --rm xray-oneclick-test
 ```
 
-镜像会执行模块完整性、版本一致性、Bash 语法、warning 级 ShellCheck、CLI、失败回滚回归测试，以及使用固定版本 Xray 对全部离线配置运行 `xray run -test`。
+镜像执行模块及版本检查、语法检查、warning 级 ShellCheck、依赖故障注入和部署回滚测试。CI 分别使用动态解析的 Stable 和固定的 v26.3.27 校验配置。可用 `--build-arg XRAY_VERSION=v26.3.27` 构建历史基准镜像。
+
+OpenRC 集成测试在独立 Alpine 容器中执行全新安装、TLS 固定校验和真实连接，并验证状态写入失败后的恢复。
+
+```bash
+docker build --target deployment -f Dockerfile.test -t xray-oneclick-deployment .
+docker run --rm xray-oneclick-deployment
+```
 
 `ike view` 和 `ike export clients` 会输出客户端连接信息，不要公开分享完整输出。
+
+## Hysteria2
+
+从菜单第 13 项或 CLI 安装。首装使用 UDP 443，已有节点默认沿用原 UDP 端口。Hysteria2 可与已有的纯 TCP 监听使用同一数字端口。普通重复安装保留现有认证、Salamander 密码和证书。
+
+```bash
+ike hysteria2 install --port 8443 --sni vpn.example.org
+ike hysteria2 install --dry-run
+ike hysteria2 show
+ike hysteria2 rotate-cert --sni vpn.example.org --yes
+ike hysteria2 rotate-credentials --yes
+```
+
+新证书默认使用 `localhost`，也可以给自己的域名或 IPv4 签发带 SAN 的自签证书。SNI 是客户端使用的证书名称，填入第三方站点域名也不会获得该站点的证书信任。兼容分享链接继续包含 `insecure=1`，该选项跳过证书校验。
+
+要验证服务器身份，可以在 Xray 中配置由受信 CA 签发且与 SNI 匹配的证书，再从客户端链接移除 `insecure=1`。自签部署可在支持固定验证的客户端通过可信渠道分发 `ike hysteria2 show` 中的证书指纹。Hysteria2 客户端使用 `pinSHA256`，Xray v26.11.9 客户端使用 TLS 字段 `pinnedPeerCertSha256`，该版本已移除 `allowInsecure`。轮换证书后要更新客户端固定指纹，轮换凭据后要更新客户端链接。[Hysteria2 URI 规范](https://v2.hysteria.network/docs/developers/URI-Scheme/)，[Xray TLS 配置](https://github.com/XTLS/Xray-core/blob/v26.11.9/infra/conf/transport_security.go)
 
 ## Shadowsocks 2022
 
@@ -725,7 +747,7 @@ XRAY_CHANNEL=prerelease ike xray upgrade
 ike xray upgrade --restart
 ```
 
-升级失败时脚本会尝试回滚旧二进制，不会自动修改现有协议配置。下载 Xray 资产后会优先使用 GitHub release API 提供的 `sha256:` digest 校验文件；旧 release 没有 digest 时会明确输出跳过提示。
+升级前校验官方资产名称、架构、版本、SHA-256 和现有配置。API 缺少摘要时会从官方 GitHub Release 读取同名 `.dgst` 的 SHA-256。镜像下载也必须匹配该摘要，无法取得可信摘要时会停止。升级失败时会尝试恢复原核心、资源和服务。自动操作遇到外部 Xray 服务或自定义 systemd 覆盖配置会停止。
 
 ## 服务管理（systemd / OpenRC）
 

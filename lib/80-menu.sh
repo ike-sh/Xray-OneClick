@@ -34,115 +34,119 @@ render_menu() {
 }
 
 show_menu() {
-    install_shortcut
-
+    local choice
     while true; do
         render_menu
-        read -r -p "请输入选项 [1-22]: " MENU_CHOICE || exit 0
-
-        case "$MENU_CHOICE" in
-            1)
-                update_xray_core || err "[失败] Xray 核心安装/更新未完成，请查看上方错误信息。"
-                ;;
-            2)
-                if ! { prepare_system && configure_ss2022 "ipv4" && install_ss2022; }; then
-                    err "[失败] Shadowsocks 2022 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            3)
-                if ! prepare_system; then
-                    err "[失败] IPv6 + Shadowsocks 2022 安装未完成，请查看上方错误信息。"
-                else
-                    if check_ipv6_status; then
-                        if ! { configure_ss2022 "ipv6" && install_ss2022; }; then
-                            err "[失败] IPv6 + Shadowsocks 2022 安装未完成，请查看上方错误信息。"
-                        fi
-                    else
-                        info "[IPv6] 未检测到可用全局 IPv6 地址，请先在服务器开通 IPv6 后重试。"
-                        err "[失败] IPv6 + Shadowsocks 2022 安装未完成。"
-                    fi
-                fi
-                ;;
-            4)
-                if ! { prepare_system && configure_vless_encryption && install_vless_encryption; }; then
-                    err "[失败] VLESS Encryption 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            5)
-                if ! { prepare_system && configure_reality "interactive" && install_reality; }; then
-                    err "[失败] VLESS TCP REALITY 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            6)
-                if ! { prepare_system && configure_vless_enc_xhttp "interactive" && install_vless_enc_xhttp; }; then
-                    err "[失败] VLESS Encryption + XHTTP 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            7)
-                if ! { prepare_system && configure_vless_xhttp_finalmask "interactive" && install_vless_xhttp_finalmask; }; then
-                    err "[失败] VLESS Encryption + XHTTP + FinalMask 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            8)
-                if ! { prepare_system && configure_vless_enc_finalmask "interactive" && install_vless_enc_finalmask; }; then
-                    err "[失败] VLESS Encryption + FinalMask 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            9)
-                if ! { prepare_system && configure_advanced_profile "xhttp-reality" "interactive" && install_advanced_profile "xhttp-reality"; }; then
-                    err "[失败] VLESS XHTTP + REALITY 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            10)
-                if ! { prepare_system && configure_advanced_profile "enc-reality" "interactive" && install_advanced_profile "enc-reality"; }; then
-                    err "[失败] VLESS Encryption + REALITY 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            11)
-                if ! { prepare_system && configure_advanced_profile "fullstack" "interactive" && install_advanced_profile "fullstack"; }; then
-                    err "[失败] VLESS Encryption + XHTTP + REALITY + FinalMask 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            12)
-                if ! { prepare_system && install_socks5; }; then
-                    err "[失败] SOCKS5 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            13)
-                if ! { prepare_system && configure_hysteria2 "interactive" && install_hysteria2; }; then
-                    err "[失败] Hysteria2 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            14)
-                view_config || err "[失败] 查看当前配置链接失败，请查看上方错误信息。"
-                ;;
-            15)
-                set_link_view_mode || err "[失败] 设置链接显示模式失败，请查看上方错误信息。"
-                ;;
-            16)
-                if ! { prepare_system && reset_secrets; }; then
-                    err "[失败] 重置密钥/密码未完成，请查看上方错误信息。"
-                fi
-                ;;
-            17)
-                uninstall || err "[失败] 卸载/清理未完成，请查看上方错误信息。"
-                ;;
-            18)
-                configure_china_direct_block || err "[失败] 中国大陆直连屏蔽设置未完成，请查看上方错误信息。"
-                ;;
-            19)
-                configure_enhanced_safety_block || err "[失败] 增强安全屏蔽设置未完成，请查看上方错误信息。"
-                ;;
-            20)
-                export_current_config_backup || err "[失败] 导出当前配置备份未完成，请查看上方错误信息。"
-                ;;
-            21)
-                configure_forward_menu || err "[失败] Tunnel 中转管理未完成，请查看上方错误信息。"
-                ;;
-            22) exit 0 ;;
-            *) err "错误选项。" ;;
+        read -r -p "请输入选项 [1-22]: " choice || return 0
+        case "$choice" in
+            22) return 0 ;;
+            14 | 15) run_menu_choice "$choice" ;;
+            *) with_xray_lock run_menu_choice "$choice" ;;
         esac
-
         pause_return_menu
     done
+}
+
+run_menu_choice() {
+    case "$1" in
+        1)
+            update_xray_core || err "[失败] Xray 核心安装/更新未完成，请查看上方错误信息。"
+            ;;
+        2)
+            if ! { prepare_system && configure_ss2022 "ipv4" && install_ss2022; }; then
+                err "[失败] Shadowsocks 2022 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        3)
+            if ! prepare_system; then
+                err "[失败] IPv6 + Shadowsocks 2022 安装未完成，请查看上方错误信息。"
+            else
+                if check_ipv6_status; then
+                    if ! { configure_ss2022 "ipv6" && install_ss2022; }; then
+                        err "[失败] IPv6 + Shadowsocks 2022 安装未完成，请查看上方错误信息。"
+                    fi
+                else
+                    info "[IPv6] 未检测到可用全局 IPv6 地址，请先在服务器开通 IPv6 后重试。"
+                    err "[失败] IPv6 + Shadowsocks 2022 安装未完成。"
+                fi
+            fi
+            ;;
+        4)
+            if ! { prepare_system && configure_vless_encryption && install_vless_encryption; }; then
+                err "[失败] VLESS Encryption 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        5)
+            if ! { prepare_system && configure_reality "interactive" && install_reality; }; then
+                err "[失败] VLESS TCP REALITY 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        6)
+            if ! { prepare_system && configure_vless_enc_xhttp "interactive" && install_vless_enc_xhttp; }; then
+                err "[失败] VLESS Encryption + XHTTP 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        7)
+            if ! { prepare_system && configure_vless_xhttp_finalmask "interactive" && install_vless_xhttp_finalmask; }; then
+                err "[失败] VLESS Encryption + XHTTP + FinalMask 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        8)
+            if ! { prepare_system && configure_vless_enc_finalmask "interactive" && install_vless_enc_finalmask; }; then
+                err "[失败] VLESS Encryption + FinalMask 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        9)
+            if ! { prepare_system && configure_advanced_profile "xhttp-reality" "interactive" && install_advanced_profile "xhttp-reality"; }; then
+                err "[失败] VLESS XHTTP + REALITY 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        10)
+            if ! { prepare_system && configure_advanced_profile "enc-reality" "interactive" && install_advanced_profile "enc-reality"; }; then
+                err "[失败] VLESS Encryption + REALITY 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        11)
+            if ! { prepare_system && configure_advanced_profile "fullstack" "interactive" && install_advanced_profile "fullstack"; }; then
+                err "[失败] VLESS Encryption + XHTTP + REALITY + FinalMask 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        12)
+            if ! { prepare_system && install_socks5; }; then
+                err "[失败] SOCKS5 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        13)
+            if ! { install_hysteria2 interactive; }; then
+                err "[失败] Hysteria2 安装未完成，请查看上方错误信息。"
+            fi
+            ;;
+        14)
+            view_config || err "[失败] 查看当前配置链接失败，请查看上方错误信息。"
+            ;;
+        15)
+            set_link_view_mode || err "[失败] 设置链接显示模式失败，请查看上方错误信息。"
+            ;;
+        16)
+            if ! { prepare_system && reset_secrets; }; then
+                err "[失败] 重置密钥/密码未完成，请查看上方错误信息。"
+            fi
+            ;;
+        17)
+            uninstall || err "[失败] 卸载/清理未完成，请查看上方错误信息。"
+            ;;
+        18)
+            configure_china_direct_block || err "[失败] 中国大陆直连屏蔽设置未完成，请查看上方错误信息。"
+            ;;
+        19)
+            configure_enhanced_safety_block || err "[失败] 增强安全屏蔽设置未完成，请查看上方错误信息。"
+            ;;
+        20)
+            export_current_config_backup || err "[失败] 导出当前配置备份未完成，请查看上方错误信息。"
+            ;;
+        21)
+            configure_forward_menu || err "[失败] Tunnel 中转管理未完成，请查看上方错误信息。"
+            ;;
+        *) err "错误选项。" ;;
+    esac
 }
