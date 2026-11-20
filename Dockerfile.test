@@ -1,29 +1,26 @@
 # syntax=docker/dockerfile:1
-FROM alpine:3.22
+FROM alpine:3.22 AS deployment
+RUN apk add --no-cache bash busybox-extras
+WORKDIR /workspace
+COPY . .
+CMD ["bash", "tests/test_openrc_deployment.sh"]
 
-ARG XRAY_VERSION=v26.3.27
-ARG XRAY_ASSET_SHA256=23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+FROM alpine:3.22 AS config-tests
 
-RUN apk add --no-cache \
-      bash \
-      ca-certificates \
-      coreutils \
-      curl \
-      jq \
-      openssl \
-      shellcheck \
-      unzip \
-    && curl -fsSL \
-      "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" \
-      -o /tmp/xray.zip \
-    && printf '%s  %s\n' "${XRAY_ASSET_SHA256}" /tmp/xray.zip | sha256sum -c - \
-    && unzip -jq /tmp/xray.zip xray -d /usr/local/bin \
-    && chmod 0755 /usr/local/bin/xray \
-    && rm -f /tmp/xray.zip
+ARG XRAY_VERSION=latest
+ARG XRAY_ASSET_SHA256=""
+
+RUN apk add --no-cache bash ca-certificates coreutils curl diffutils flock iproute2 jq openrc openssl shellcheck unzip
 
 WORKDIR /workspace
 COPY . .
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN source lib/00-bootstrap.sh \
+    && check_os && detect_arch \
+    && download_xray_core "${XRAY_VERSION}" stable /tmp/xray-download \
+    && { [[ -z "${XRAY_ASSET_SHA256}" ]] || verify_xray_asset_digest "/tmp/xray-download/${XRAY_ASSET}" "sha256:${XRAY_ASSET_SHA256}"; } \
+    && install -m 0755 "$XRAY_EXTRACTED_BINARY" /usr/local/bin/xray \
+    && rm -rf /tmp/xray-download
 
 ENV XRAY_BIN=/usr/local/bin/xray
-
 CMD ["bash", "tests/run_all.sh"]

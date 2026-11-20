@@ -2,23 +2,13 @@
 # installer-state.json lifecycle.
 
 init_state() {
-    local broken_state tmp
+    local tmp
 
     mkdir -p "$CONFIG_DIR" || return 1
     command -v jq >/dev/null 2>&1 || return 1
-    if [[ ! -f "$STATE_FILE" ]]; then
-        tmp="$(state_temp_file)" || return 1
-        if ! printf '%s\n' '{}' >"$tmp" || ! mv "$tmp" "$STATE_FILE"; then
-            rm -f "$tmp"
-            return 1
-        fi
-    fi
-    if ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
-        broken_state="$(mktemp "${STATE_FILE}.broken.$(date +%Y%m%d%H%M%S).XXXXXX")" || return 1
-        rm -f "$broken_state"
-        if ! mv "$STATE_FILE" "$broken_state"; then
-            return 1
-        fi
+    if [[ -e "$STATE_FILE" || -L "$STATE_FILE" ]]; then
+        validate_json_object "$STATE_FILE" || return 1
+    else
         tmp="$(state_temp_file)" || return 1
         if ! printf '%s\n' '{}' >"$tmp" || ! mv "$tmp" "$STATE_FILE"; then
             rm -f "$tmp"
@@ -110,6 +100,11 @@ state_set_cnblock() {
     }
     rm -f "$tmp"
     ensure_config_security || return 1
+}
+
+state_meta_value() {
+    [[ -f "$STATE_FILE" ]] || return 0
+    jq -r --arg key "$1" '.meta[$key] // empty' "$STATE_FILE" 2>/dev/null
 }
 
 state_set_meta_action() {

@@ -71,15 +71,14 @@ configure_vless_encryption() {
     echo -e "\n${YELLOW}[配置] VLESS Encryption 配置模式:${PLAIN}"
     echo -e "  1) 基础模式 ${GREEN}(推荐，保持当前简单体验)${PLAIN}"
     echo "  2) 高级模式 (外观混淆、0-RTT/1-RTT、ticket 有效期)"
-    read -r -p "选项 (默认: 1): " V_MODE_OPT
+    read -r -p "选项 (默认: 1): " V_MODE_OPT || return 1
     [[ "${V_MODE_OPT:-1}" == "2" ]] && configure_vless_advanced_options
 
-    ask_vless_auth
+    ask_vless_auth || return 1
 
-    ask_port "VLESS Encryption 端口" "8443" VLESS_PORT
+    ask_port "VLESS Encryption 端口" "8443" VLESS_PORT || return 1
     VLESS_LISTEN="0.0.0.0"
-    VLESS_UUID="$("$BIN_PATH" uuid 2>/dev/null | tr -d '\r\n')"
-    [[ -n "$VLESS_UUID" ]] || VLESS_UUID="$(cat /proc/sys/kernel/random/uuid)"
+    VLESS_UUID="$(generate_uuid)" || return 1
 
     generate_vless_encryption_pair "$VLESS_AUTH" || return 1
 }
@@ -328,7 +327,7 @@ install_vless_enc_finalmask() {
         }
     fi
 
-    tmp="$(config_temp_file)" || return 1
+    tmp="$(config_temp_file "${VLESS_ENC_FM_DRY_RUN:-false}")" || return 1
     if ! jq --arg tag "$VLESS_ENC_FM_TAG" \
         --arg listen "${VLESS_ENC_FM_LISTEN:-0.0.0.0}" \
         --arg port "$VLESS_ENC_FM_PORT" \

@@ -137,7 +137,7 @@ run_config_command() {
             "$editor_cmd" "$CONFIG_FILE" || return 1
             validate_config_file || {
                 err "[失败] 配置校验未通过，正在恢复编辑前备份。"
-                restore_latest_config_backup >/dev/null 2>&1 || err "[回滚] 恢复编辑前配置失败。"
+                restore_config_backup >/dev/null 2>&1 || err "[回滚] 恢复编辑前配置失败。"
                 return 1
             }
             read -r -p "配置校验通过，是否重启 Xray? [y/N]: " restart_answer

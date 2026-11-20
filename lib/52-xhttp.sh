@@ -625,7 +625,7 @@ install_vless_xhttp_finalmask() {
     finalmask_json="null"
     [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]] && finalmask_json="$XHTTP_FINALMASK_JSON"
 
-    tmp="$(config_temp_file)" || return 1
+    tmp="$(config_temp_file "${XHTTP_DRY_RUN:-false}")" || return 1
     if ! MSYS2_ENV_CONV_EXCL="XHTTP_JQ_VALUE" XHTTP_JQ_VALUE="$XHTTP_PATH" jq --arg tag "$VLESS_XHTTP_FM_TAG" \
         --arg port "$XHTTP_PORT" \
         --arg uuid "$VLESS_UUID" \
@@ -973,7 +973,7 @@ install_vless_enc_xhttp() {
         }
     fi
 
-    tmp="$(config_temp_file)" || return 1
+    tmp="$(config_temp_file "${ENC_XHTTP_DRY_RUN:-false}")" || return 1
     if ! MSYS2_ENV_CONV_EXCL="ENC_XHTTP_JQ_PATH" ENC_XHTTP_JQ_PATH="$ENC_XHTTP_PATH" jq --arg tag "$VLESS_ENC_XHTTP_TAG" \
         --arg listen "${ENC_XHTTP_LISTEN:-0.0.0.0}" \
         --arg port "$ENC_XHTTP_PORT" \

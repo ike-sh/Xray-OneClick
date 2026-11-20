@@ -39,7 +39,51 @@ validate_service_file() {
     local service_file="${1:-$(service_file_path)}"
 
     [[ -f "$service_file" ]] || return 1
-    grep -q "ExecStart=$BIN_PATH run -c $CONFIG_FILE" "$service_file"
+    grep -Fxq "ExecStart=$BIN_PATH run -c $CONFIG_FILE" "$service_file"
+}
+
+service_manager_ready() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            if [[ ( -d "${XRAY_ONECLICK_SYSTEMD_DIR:-/run/systemd/system}" ||
+                "${XRAY_ONECLICK_ALLOW_FAKE_SYSTEMD:-false}" == "true" ) ]] &&
+                systemctl show --property=Version >/dev/null 2>&1; then
+                return 0
+            fi
+            ;;
+        openrc)
+            command -v rc-service >/dev/null && command -v rc-update >/dev/null &&
+                [[ -d "$(dirname "$(service_file_path)")" ]] && return 0
+            ;;
+    esac
+    err "[服务] $INIT_SYSTEM 当前不可用。请在运行 systemd 或 OpenRC 的系统中部署。"
+    return 1
+}
+
+check_xray_service_ownership() {
+    local unit fragment="" overrides=""
+    unit="$(service_file_path)"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        fragment="$(systemctl show --property=FragmentPath --value "$SERVICE_NAME" 2>/dev/null)" || return 1
+        overrides="$(systemctl show --property=DropInPaths --value "$SERVICE_NAME" 2>/dev/null)" || return 1
+    fi
+    if [[ -n "$overrides" || ( -n "$fragment" && "$fragment" != "$unit" ) ]] ||
+        { [[ -e "$unit" || -L "$unit" ]] && { [[ -L "$unit" ]] || ! grep -Fxq '# Managed by Xray-OneClick' "$unit"; }; } ||
+        { [[ ! -f "$unit" ]] && xray_service_is_active; }; then
+        err "[服务] 检测到外部 Xray 服务或覆盖配置，自动部署已停止。请检查现有服务后再运行 ike service repair --yes。"
+        return 1
+    fi
+    if [[ -f "$unit" ]]; then
+        if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+            validate_service_file "$unit"
+        else
+            grep -Fxq "command=\"$BIN_PATH\"" "$unit" &&
+                grep -Fxq "command_args=\"run -c $CONFIG_FILE\"" "$unit"
+        fi || {
+            err "[服务] Xray 服务使用不同的核心或配置路径: $unit"
+            return 1
+        }
+    fi
 }
 
 write_xray_service() {
@@ -77,6 +121,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=$ASSET_DIR
+Environment=XRAY_LOCATION_ASSET=$ASSET_DIR
 ExecStart=$BIN_PATH run -c $CONFIG_FILE
 Restart=on-failure
 RestartSec=10
@@ -138,7 +183,7 @@ ensure_xray_service() {
         enable_xray_service || return 1
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
         local init_file backup_path tmp_init
-        init_file="$(openrc_init_path)"
+        init_file="$(service_file_path)"
         mkdir -p "$(dirname "$init_file")" "$ASSET_DIR" "$(log_dir_path)" || return 1
         if [[ -f "$init_file" ]]; then
             backup_path="$(mktemp "${init_file}.bak.$(date +%Y%m%d%H%M%S).XXXXXX")" || return 1
@@ -165,6 +210,7 @@ command_args="run -c $CONFIG_FILE"
 command_background=true
 command_user="root"
 directory="$ASSET_DIR"
+export XRAY_LOCATION_ASSET="$ASSET_DIR"
 pidfile="/run/\${RC_SVCNAME}.pid"
 output_log="$(log_dir_path)/access.log"
 error_log="$(log_dir_path)/error.log"
@@ -201,16 +247,57 @@ EOF
 }
 
 create_service() {
-    ensure_xray_service "${XRAY_ONECLICK_YES:-false}"
+    check_xray_service_ownership || return 1
+    [[ -f "$(service_file_path)" ]] || ensure_xray_service false
+}
+
+create_deployment_service() {
+    local unit
+    unit="$(service_file_path)"
+    [[ ! -f "$unit" ]] || return 0
+    snapshot_deployment_file "$unit" || return 1
+    DEPLOYMENT_CREATED_SERVICE=true
+    create_service
+}
+
+restart_deployment_service() {
+    if xray_service_is_active; then
+        DEPLOYMENT_WAS_ACTIVE=true
+    fi
+    DEPLOYMENT_RESTARTED=true
+    restart_service
 }
 
 xray_service_is_active() {
     if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
         systemctl is-active --quiet "$SERVICE_NAME"
     elif [[ "$INIT_SYSTEM" == "openrc" ]] && command -v rc-service >/dev/null 2>&1; then
-        rc-service "$SERVICE_NAME" status 2>/dev/null | grep -qiE 'started|running'
+        rc-service "$SERVICE_NAME" status >/dev/null 2>&1
     else
         return 1
+    fi
+}
+
+xray_service_pid() {
+    local pid
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        pid="$(systemctl show --property=MainPID --value "$SERVICE_NAME" 2>/dev/null)" || return 1
+    elif [[ "$INIT_SYSTEM" == "openrc" && -r "/run/${SERVICE_NAME}.pid" ]]; then
+        read -r pid <"/run/${SERVICE_NAME}.pid" || return 1
+    fi
+    [[ "${pid:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s' "$pid"
+}
+
+disable_new_xray_service() {
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        [[ ! -f "$(service_file_path)" ]] || systemctl disable "$SERVICE_NAME"
+    else
+        local enabled
+        enabled="$(rc-update show default)" || return 1
+        if awk -v name="$SERVICE_NAME" '$1 == name { found=1 } END {exit !found}' <<<"$enabled"; then
+            rc-update del "$SERVICE_NAME" default || return 1
+        fi
     fi
 }
 
@@ -237,10 +324,16 @@ restart_xray_service() {
         err "[服务] 无法自动重启，请手动运行: $BIN_PATH run -c $CONFIG_FILE"
         return 1
     fi
+    # systemd Type=simple and OpenRC can report success before Xray binds.
+    sleep 1
+    if ! xray_service_is_active; then
+        err "[服务] Xray 启动后未保持运行，请检查 ike logs。"
+        return 1
+    fi
 }
 
 restart_service() {
-    restart_xray_service
+    check_xray_service_ownership && restart_xray_service
 }
 
 status_xray_service() {
@@ -263,7 +356,7 @@ xray_service_status() {
             printf '%s' "未运行"
         fi
     elif [[ "$INIT_SYSTEM" == "openrc" ]] && command -v rc-service >/dev/null 2>&1; then
-        if rc-service "$SERVICE_NAME" status 2>/dev/null | grep -qiE 'started|running'; then
+        if xray_service_is_active; then
             printf '%s' "运行中"
         else
             printf '%s' "未运行"
@@ -284,24 +377,5 @@ stop_service() {
             err "[服务] 停止 OpenRC 服务 ${SERVICE_NAME} 失败。"
             return 1
         fi
-    fi
-}
-
-stop_service_for_update() {
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        info "[服务] 停止 ${SERVICE_NAME}.service 以替换 Xray 核心..."
-        if ! systemctl stop "$SERVICE_NAME"; then
-            err "[服务] 停止 ${SERVICE_NAME}.service 失败，已中止更新。"
-            return 1
-        fi
-    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        info "[服务] 停止 ${SERVICE_NAME} 以替换 Xray 核心..."
-        if ! rc-service "$SERVICE_NAME" stop; then
-            err "[服务] 停止 ${SERVICE_NAME} 失败，已中止更新。"
-            return 1
-        fi
-    else
-        err "[服务] 未检测到 systemd/openrc，无法安全停止服务，已中止更新。"
-        return 1
     fi
 }

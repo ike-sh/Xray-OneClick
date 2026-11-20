@@ -3,7 +3,7 @@
 
 info() { echo -e "${YELLOW}$*${PLAIN}"; }
 ok() { echo -e "${GREEN}$*${PLAIN}"; }
-err() { echo -e "${RED}$*${PLAIN}"; }
+err() { echo -e "${RED}$*${PLAIN}" >&2; }
 
 die() {
     err "$*"

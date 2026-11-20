@@ -36,11 +36,14 @@ readme_version="$(sed -n 's/.*当前版本：\*\*\([0-9.]*\)\*\*.*/\1/p' README.
     exit 1
 }
 
-bash -n install.sh scripts/bootstrap.sh lib/*.sh tests/*.sh
+for script in install.sh scripts/bootstrap.sh lib/*.sh tests/*.sh; do
+    bash -n "$script"
+done
 sh -n scripts/bootstrap.sh
 shellcheck -x -S warning -e SC2034,SC2120 install.sh scripts/bootstrap.sh lib/*.sh tests/*.sh
 bash install.sh version
 bash tests/test_config_generation.sh
 bash tests/test_regressions.sh
+bash tests/test_deployment.sh
 
-echo "[OK] Docker 完整测试全部通过"
+echo "[OK] 完整测试全部通过"
